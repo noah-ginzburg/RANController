@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'biodrone_controller'
+package_name = 'crazyflie_controller'
 
 setup(
     name=package_name,
