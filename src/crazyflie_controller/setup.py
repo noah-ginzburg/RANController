@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'drone_controller = crazyflie_controller.drone_controller:main',
         ],
     },
 )

@@ -1,8 +1,9 @@
 import os
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -24,6 +25,15 @@ def generate_launch_description():
         }.items()
     )
 
+    crazyflie_controller = Node(
+        package='crazyflie_controller',
+        executable='drone_controller',
+        name='drone_controller',
+        output='screen',
+        parameters=[{'drone_name': 'cf01'}],
+    )
+
     return LaunchDescription([
         crazyswarm2,
+        TimerAction(period=3.0, actions=[crazyflie_controller]),
     ])
