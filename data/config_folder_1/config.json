@@ -1,0 +1,473 @@
+{
+    "data": {
+        "environment": {
+            "collisions": false,
+            "ticks_per_second": 1,
+            "time_limit": 1000,
+            "num_runs": 1,
+            "target_position_swaps": [],
+            "post_bifurcation_swap": null,
+            "termination": {
+                "type": "proximity",
+                "target_ids": [
+                    "static_0.s#0"
+                ],
+                "radius": 0.01,
+                "agent_ids": "any"
+            },
+            "results": {
+                "base_path": "../data/",
+                "agent_specs": [
+                    "base",
+                    "mean_field"
+                ],
+                "group_specs": [],
+                "snapshots_per_second": 1
+            },
+            "logging": {
+                "console": true,
+                "console_level": "INFO",
+                "file_level": "INFO"
+            },
+            "gui": {},
+            "arena": {
+                "random_seed": 0,
+                "radius": 1,
+                "_id": "square",
+                "color": "gray"
+            },
+            "objects": {
+                "static_0": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.4,
+                            -0.4,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "green",
+                    "strength": [
+                        1
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_1": {
+                    "number": 1,
+                    "position": [
+                        [
+                            -0.3,
+                            -0.3,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_2": {
+                    "number": 1,
+                    "position": [
+                        [
+                            -0.1,
+                            -0.3,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_3": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.1,
+                            -0.3,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_4": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.3,
+                            -0.3,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_5": {
+                    "number": 1,
+                    "position": [
+                        [
+                            -0.3,
+                            -0.1,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_6": {
+                    "number": 1,
+                    "position": [
+                        [
+                            -0.1,
+                            -0.1,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_7": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.1,
+                            -0.1,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_8": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.3,
+                            -0.1,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_9": {
+                    "number": 1,
+                    "position": [
+                        [
+                            -0.3,
+                            0.1,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_10": {
+                    "number": 1,
+                    "position": [
+                        [
+                            -0.1,
+                            0.1,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_11": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.1,
+                            0.1,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_12": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.3,
+                            0.1,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_13": {
+                    "number": 1,
+                    "position": [
+                        [
+                            -0.3,
+                            0.3,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_14": {
+                    "number": 1,
+                    "position": [
+                        [
+                            -0.1,
+                            0.3,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_15": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.1,
+                            0.3,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                },
+                "static_16": {
+                    "number": 1,
+                    "position": [
+                        [
+                            0.3,
+                            0.3,
+                            0
+                        ]
+                    ],
+                    "_id": "idle",
+                    "shape": "cylinder",
+                    "height": 0.2,
+                    "diameter": 0.05,
+                    "color": "red",
+                    "strength": [
+                        -15
+                    ],
+                    "uncertainty": [
+                        0
+                    ]
+                }
+            },
+            "agents": {
+                "movable_0": {
+                    "position": [
+                        [
+                            -0.45,
+                            0.45,
+                            0
+                        ]
+                    ],
+                    "orientation": [
+                        [
+                            0,
+                            0,
+                            90
+                        ]
+                    ],
+                    "number": 1,
+                    "shape": "cylinder",
+                    "linear_velocity": 0.01,
+                    "angular_velocity": 10,
+                    "height": 0.02,
+                    "diameter": 0.033,
+                    "color": "blue",
+                    "detection": {
+                        "type": "GPS",
+                        "range": 5.0,
+                        "acquisition_per_second": "inf"
+                    },
+                    "moving_behavior": "mean_field",
+                    "mean_field_model": {
+                        "steps_per_tick": 1,
+                        "perception_width": 0.2,
+                        "perception_global_inhibition": 0.2,
+                        "num_neurons": 30,
+                        "num_targets": 0,
+                        "target_qualities": [
+                            1.0
+                        ],
+                        "num_guards": 16,
+                        "guard_qualities": [],
+                        "target_ids": [
+                            "static_0.s#0"
+                        ],
+                        "guard_ids": [
+                            "static_1.s#0",
+                            "static_2.s#0",
+                            "static_3.s#0",
+                            "static_4.s#0",
+                            "static_5.s#0",
+                            "static_6.s#0",
+                            "static_7.s#0",
+                            "static_8.s#0",
+                            "static_9.s#0",
+                            "static_10.s#0",
+                            "static_11.s#0",
+                            "static_12.s#0",
+                            "static_13.s#0",
+                            "static_14.s#0",
+                            "static_15.s#0",
+                            "static_16.s#0"
+                        ],
+                        "guard_decay_rate": 15.0,
+                        "kappa": 20,
+                        "v": 0.5,
+                        "u": 10.0,
+                        "sigma": 1.5,
+                        "beta": 1.0,
+                        "integration_time": 50,
+                        "integration_dt": 0.1,
+                        "reference": "egocentric"
+                    }
+                }
+            }
+        }
+    }
+}
