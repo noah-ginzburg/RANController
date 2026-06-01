@@ -28,3 +28,17 @@ dist/
 *.swp
 *.swo
 .DS_Store
+
+# Ignore LaTeX auxiliary files
+*.aux
+*.log
+*.toc
+*.synctex.gz
+*.blg
+*.bbl
+*.out
+*.fdb_latexmk
+*.fls
+
+# Optional: Ignore the compiled PDF if you only want to track source code
+# *.pdf

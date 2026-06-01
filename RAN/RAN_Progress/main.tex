@@ -1,0 +1,233 @@
+\documentclass[12pt, letterpaper]{article}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%% DO NOT MODIFY HERE %%%%%%%%%%%%%%%%
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{mathrsfs}		 % For Symbols
+\usepackage{amssymb}		 % For More Symbols
+\usepackage{amsfonts}		 % For Other Symbols
+\usepackage{amsmath}         % For Equations
+\usepackage{mathtools}
+\usepackage{amsthm}          % For Theorems & Definitions
+\usepackage{tabularx}        % Package used to make variable width-columns, i.e.,
+                             % column widths are changed to fit the maximum width
+                             % and text is wrapped nicely.
+
+\usepackage{threeparttable}
+
+\usepackage{lscape}			% For landscape
+\usepackage{adjustbox}		% To adjust table width
+\usepackage{multirow}		% For merging and splitting table cells
+\usepackage{float}          % For figure formatting
+\usepackage{booktabs}       % For table formatting
+\usepackage[parfill]{parskip}
+\usepackage{hyperref}
+\usepackage{lipsum}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%% MODIFY TITLE PAGE %%%%%%%%%%%%%%%%%
+\title{3D Spherical Ring Attractor Network Documentation}
+\author{Noah Ginzburg}
+\date{\today}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{document}
+
+\maketitle
+\rule{0.95\textwidth}{0.5pt}
+
+\tableofcontents
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Overview}
+
+The goal of this project is to extend a 2D mean-field Ring Attractor Network (RAN) into a 3D spherical version for use on a Crazyflie drone for heading tracking. A ring attractor network is a recurrent neural network that forms stable activity bumps which track sensory input. In 2D, nodes are placed on a ring and the network tracks a single angle. In 3D, nodes are placed on the surface of a sphere so that the network can represent a full heading direction in three-dimensional space.
+
+The network is governed by the following mean-field dynamics:
+
+\begin{equation}
+    \dot{z}_i = -z_i + \tanh\left(u \sum_j M_{ij} z_j + b_i - \beta\right) - \tanh(-\beta)
+\end{equation}
+
+where $z_i$ is the firing rate of node $i$, $u$ is the gain parameter, $M_{ij}$ is the connection kernel, $b_i$ is the external sensory input, and $\beta$ is a bias term. The network is integrated using Euler's method with timestep $dt$.
+
+The population vector average gives the decoded heading direction. In 3D, the node positions are converted to Cartesian coordinates, and the activation-weighted mean is computed as:
+
+\begin{equation}
+    \bar{\mathbf{v}} = \frac{\sum_i z_i \, \mathbf{p}_i}{\sum_i z_i}
+\end{equation}
+
+where $\mathbf{p}_i$ is the Cartesian unit vector for node $i$.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Ideas}
+
+\subsection{Node Placement: Fibonacci Sphere}
+
+One approach to placing nodes on a sphere is the Fibonacci Sphere, which uses the golden ratio and Fibonacci spirals to generate nearly equidistant points. For $N$ points indexed $i = 0, 1, \ldots, N-1$:
+
+\begin{equation}
+    z_i = 1 - \frac{2i}{N-1}, \qquad r_i = \sqrt{1 - z_i^2}, \qquad \theta_i = i \cdot \frac{2\pi}{\varphi^2}
+\end{equation}
+
+where $\varphi = \frac{1+\sqrt{5}}{2}$ is the golden ratio. The main drawback is that nodes are generated asymmetrically, which produces an uneven connection kernel matrix $M$ and may cause heading tracking issues.
+
+\subsection{Node Placement: Icosphere}
+
+An icosphere is the only 3D sphere that can achieve near-perfectly equidistant points. It is recursively constructed using triangles starting from a base icosahedron with 12 vertices and 20 faces. Each subdivision level splits every triangle into 4 smaller triangles. The number of nodes at subdivision level $n$ is:
+
+\begin{equation}
+    N = 10 \cdot 4^n + 2
+\end{equation}
+
+This yields node counts of 12, 42, 162, 642, 2562, 10242, and so on. Because the icosphere has antipodal symmetry (for every node at position $\mathbf{p}$ there exists a node at $-\mathbf{p}$), the connection kernel is symmetric and heading tracking is uniform across all directions.
+
+\subsection{Discretization Bias}
+
+A fundamental limitation of any discrete node placement is that targets will not in general land exactly on a node. The sensory input at node $i$ from a target at angular distance $\alpha_i$ is:
+
+\begin{equation}
+    b_i = e^{\kappa(\cos \alpha_i - 1)} \cdot \gamma
+\end{equation}
+
+where $\kappa$ is a sharpness parameter and $\gamma$ is the target quality. The peak input for a given target occurs at the nearest node, at distance $d$:
+
+\begin{equation}
+    b_{\text{peak}} = e^{\kappa(\cos d - 1)}
+\end{equation}
+
+This function is strictly monotone decreasing in $d$, since $\frac{d}{dd}(\cos d - 1) = -\sin d < 0$ for $d \in (0, \pi)$. Therefore:
+
+\begin{equation}
+    d_A < d_B \implies b_{\text{peak}}^A > b_{\text{peak}}^B
+\end{equation}
+
+A target that happens to land closer to a node receives a stronger peak input than one that falls between nodes. With winner-take-all dynamics above the critical gain $u_{\text{crit}}$, even small differences in peak input are amplified by the nonlinear dynamics, causing the closer target to be selected more often than 50\% of the time. The only clean solution is to increase resolution (larger $n$), which shrinks the maximum node-to-target gap.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Methods}
+
+\subsection{Coordinate Convention}
+
+Nodes are stored internally in polar coordinates as $(r, \phi, \theta)$ where $\phi \in [-\pi, \pi]$ is the azimuthal angle in the $xy$-plane and $\theta \in [0, \pi]$ is the polar angle from the $z$-axis (colatitude). Array indices are defined as:
+
+\begin{equation}
+    \text{MAG} = 0, \qquad \text{PHI} = 1, \qquad \text{THETA} = 2
+\end{equation}
+
+\subsection{Geodesic Distance}
+
+The angular distance between two points on a unit sphere is computed using the spherical law of cosines:
+
+\begin{equation}
+    \alpha = \arccos\left(\cos\theta_i \cos\theta_j + \sin\theta_i \sin\theta_j \cos(\phi_i - \phi_j)\right)
+\end{equation}
+
+The argument is clipped to $[-1, 1]$ to avoid numerical errors from floating point values slightly outside the domain of $\arccos$.
+
+\subsection{Connection Kernel}
+
+The connection weight between nodes $i$ and $j$ is:
+
+\begin{equation}
+    M_{ij} = J_0 + J \cdot \cos\!\left(\pi \left(\frac{\alpha_{ij}}{\pi}\right)^v\right) \cdot \frac{1}{N}
+\end{equation}
+
+where $\alpha_{ij}$ is the geodesic distance between nodes $i$ and $j$, $J_0$ is a global offset, $J$ is the kernel amplitude, $v$ controls the kernel shape (sharpness of the Mexican-hat profile), and $N$ is the total number of nodes. The $1/N$ normalization ensures that the maximum eigenvalue of $M$ remains approximately constant as $N$ increases, keeping $u_{\text{crit}}$ stable across resolutions.
+
+\subsection{Critical Gain}
+
+The network undergoes a bifurcation from a homogeneous state to a bump state at the critical gain:
+
+\begin{equation}
+    u_{\text{crit}} = \frac{1}{\lambda_{\max}(M) \cdot \text{sech}^2(\beta)}
+\end{equation}
+
+where $\lambda_{\max}(M)$ is the largest absolute eigenvalue of $M$. For the current parameters, $\lambda_{\max} \approx 3.07$ and $u_{\text{crit}} \approx 0.775$.
+
+\subsection{Sensory Input}
+
+The external input vector $\mathbf{b}$ is generated from a list of targets. Each target is defined by $(r, \phi, \theta, \gamma)$ where $\gamma$ is quality (signal strength). The input at node $i$ summed over all targets is:
+
+\begin{equation}
+    b_i = \frac{1}{\sqrt{N}} \sum_j \gamma_j \, e^{\kappa(\cos \alpha_{ij} - 1)}
+\end{equation}
+
+where $\alpha_{ij}$ is the geodesic distance from node $i$ to target $j$.
+
+\subsection{Integration}
+
+The network is integrated with Euler's method including additive Gaussian noise:
+
+\begin{equation}
+    z(t + dt) = z(t) + dt \left(-z + \tanh(u M z + b - \beta) - \tanh(-\beta)\right) + \eta
+\end{equation}
+
+where $\eta \sim \mathcal{N}(0, \sigma\sqrt{dt}/\sqrt{N})$ per node. Noise is required for symmetry breaking when two targets are equidistant.
+
+\subsection{Computational Cost}
+
+The dominant cost per integration step is the matrix-vector product $Mz$, which requires $\mathcal{O}(N^2)$ operations. At 50 Hz (20 ms per step) with NumPy BLAS, the practical resolution limits are approximately:
+
+\begin{itemize}
+    \item Modern laptop: up to $n = 5$ ($N = 10{,}242$ nodes)
+    \item Raspberry Pi 4: up to $n = 3$ to $n = 4$ ($N = 642$ to $2{,}562$ nodes)
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Results}
+
+\subsection{Single Target Tracking}
+
+With a single target, the network correctly forms a single activity bump centred on the target location. The population vector average accurately recovers the target direction.
+
+\subsection{Two Target Selection}
+
+With two targets, the network exhibits winner-take-all behaviour above $u_{\text{crit}}$. When targets are placed 180 degrees apart (antipodal), selection is 50/50 due to noise-driven symmetry breaking. For non-antipodal targets, discretization bias causes the target closer to a node to be selected more frequently.
+
+\subsection{Parameter Sweep}
+
+\begin{table}[H]
+\centering
+\caption{Parameter sweep results}
+\begin{tabular}{ccccccc}
+\toprule
+$u$ & $\sigma$ & $\kappa$ & $v$ & $n_{\text{sub}}$ & Outcome & Notes \\
+\midrule
+ &  &  &  &  &  & \\
+ &  &  &  &  &  & \\
+ &  &  &  &  &  & \\
+ &  &  &  &  &  & \\
+ &  &  &  &  &  & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Conclusions}
+
+The following lessons were learned during development of the 3D spherical RAN:
+
+\begin{enumerate}
+    \item An icosphere with subdivision level $n$ provides near-perfectly equidistant nodes and antipodal symmetry, making it the correct choice for uniform spherical representation.
+
+    \item The connection kernel must be normalized by $1/N$ so that $\lambda_{\max}(M)$ and therefore $u_{\text{crit}}$ remain consistent across different resolutions.
+
+    \item Winner-take-all behaviour requires $u > u_{\text{crit}}$ and sufficient noise $\sigma$ for symmetry breaking. At $n=2$ ($N=162$), $\sigma = 14$ was found to work reliably.
+
+    \item Discretization bias is an inherent limitation: a target landing closer to a node receives a stronger peak sensory input $b_{\text{peak}} = e^{\kappa(\cos d - 1)}$, which is monotone decreasing in the node-to-target gap $d$. This bias is amplified by winner-take-all dynamics and can only be reduced by increasing resolution.
+
+    \item The total integrated input across the Voronoi region of each target, not just the peak value, determines which target is selected. Equalizing only the peak is insufficient because it does not account for differences in bump shape.
+
+    \item At 50 Hz real-time integration, subdivision level $n=4$ ($N=2{,}562$) is safe on a modern laptop and borderline on a Raspberry Pi 4. Level $n=3$ ($N=642$) is safe on both.
+\end{enumerate}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\end{document}
