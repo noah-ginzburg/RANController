@@ -6,7 +6,7 @@ from rclpy.node import Node
 import numpy as np
 from rclpy.duration import Duration as RCLDuration
 from builtin_interfaces.msg import Duration
-from geometry_msgs import Twist
+from tf2_ros import TransformListener, Buffer
 
 #Simple indexing
 X_DIR = ROLL = 0
@@ -14,20 +14,18 @@ Y_XIR = PITCH = 1
 Z_DIR = YAW = 2
 
 class DroneController(Node):
-    UPDATE_RATE = 50.0
-    GROUP_MASK = 0
+    UPDATE_RATE = 50.0  #hz
+    GROUP_MASK = 0  #0 = all drones
     HEIGHT = 1.0    #Desired launch height
     DURATION = Duration(sec=3, nanosec=0)   #Time to reach the desired height
-    DEADZONE_VELOCITY = 0.01    #any velocity slow than this will make the drone hover in place
 
-    KP = 1
-    KI = 1
-    KD = 1
-     
     def __init__(self):
         super().__init__('drone_controller')
-        self.declare_parameter('drone_name', 'cf01') # 2. declare
+        self.declare_parameter('drone_name', 'cf01') # declare
+        self.declare_parameter('use_sim_odom', True) # declare
+
         self.drone_name = self.get_parameter('drone_name').value    #drone name parameter
+        self.use_sim_odom = self.get_parameter('use_sim_odom').value
 
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         while not self.cli.wait_for_service(timeout_sec=1.0):
@@ -35,6 +33,7 @@ class DroneController(Node):
 
         self.create_timer(1.0 / self.UPDATE_RATE, self.update)
         self.prev_time = self.get_clock().now()
+        self.now = 0.0
 
         self.w_abs_desired = 0.0
         self.max_speed = 0.25
@@ -45,14 +44,15 @@ class DroneController(Node):
 
         self.vel_desired = np.array([0.0, 0.0, 0.0])
 
-        # self.movement_msg = FullState()
-        # self.movement_msg.acc.x = 0.0
-        # self.movement_msg.acc.y = 0.0
-        # self.movement_msg.acc.z = 0.0
-        # self.movement_pub = self.create_publisher(FullState, f'{self.drone_name}/cmd_full_state', 10)
+        self.movement_msg = FullState()
+        self.movement_msg.acc.x = 0.0
+        self.movement_msg.acc.y = 0.0
+        self.movement_msg.acc.z = 0.0
+        self.movement_pub = self.create_publisher(FullState, f'{self.drone_name}/cmd_full_state', 10)
 
-        self.movement_msg = Twist()
-        self.movement_pub = self.create_publisher(FullState, f'{self.drone_name}/cmd_vel_legacy', 10)
+        self.should_hover = True
+        self.tf_buffer = tf2_ros.Buffer()
+        self.prev_trans = None
 
 
     def send_takeoff_req(self, group_mask, height, duration):
@@ -66,44 +66,63 @@ class DroneController(Node):
         return self.future.result()
     
     def update(self):
-        self.movement_msg.header.stamp = self.get_clock().now().to_msg()
-        self.movement_msg.header.frame_id = self.drone_name
-
-        now = self.get_clock().now()
+        self.now = self.get_clock().now()
         dt = (now - self.prev_time) * 1e-9
 
-        if (np.linalg.norm(self.vel) < self.DEADZONE_VELOCITY):
-            self.set_hover_speeds()
+        #TESTING
+        vel_desired = np.array([0.0, 0.0, 0.0])
+
+        if (should_hover):
+            self.hover()
         else:
-            # self.set_movement_speeds()
-            self.set_hover_speeds()
+            self.hover()
+            # self.set_speeds(vel_desired)
 
+        if use_sim_odom: _update_sim(dt)
+        else: _update_real(dt)
+
+        self.movement_msg.header.stamp = self.get_clock().now().to_msg()
+        self.movement_msg.header.frame_id = self.drone_name
         self.movement_pub.publish()
+
+        self.prev_time = self.now
+        self.prev_pos = self.pos    
+
+    def set_speeds(self, speeds):
+        self.movement_msg.twist.linear.x = speeds[X_DIR]
+        self.movement_msg.twist.linear.y = speeds[Y_DIR]
+        self.movement_msg.twist.linear.z = speeds[Z_DIR]
+
+    #Macro, because python has no preprocessor :(
+    def hover(self): self.set_speeds(np.zeros(3))
+
+    def _update_sim(self, dt):
+        try:
+            trans = self.tf_buffer.lookup_transform('mocap', f'{self.drone_name}/takeoff', rclpy.time.Time(), RCLDuration(0.5))
+        except (tf2_ros.TransformException) as e:
+            self.get_logger().warn(e + ", drone is being forced to hover")
+            self.hover()
+            return
         
-        self.prev_time = now
+        self.pos[X_DIR] = trans.translation.x
+        self.pos[Y_DIR] = trans.translation.y
+        self.pos[Z_DIR] = trans.translation.z
+
+        self.vel = (self.pos - self.prev_pos)/dt
 
         
 
-    def set_hover_speeds():
-        self.vel_desired = np.array([0.0, 0.0, 0.0])
-        self.set_msg_speeds()
+        self.prev_trans = trans
 
-
-    def set_movement_speeds():
-        #implement RAN
-        self.vel_desired = np.array([0.0, 0.0, self.max_speed])
-        self.set_msg_speeds()
-
-
-    def set_msg_speeds():
-        self.movement_msg.twist.x = vel_desired[X_DIR]
-        self.movement_msg.twist.y = vel_desired[Y_DIR]
-        self.movement_msg.twist.y = vel_desired[Z_DIR]
+    def _update_real(self):
+        test = 1
 
 
 def main(args=None):
     rclpy.init(args=args)
     drone_controller = DroneController()
+
+    #
     response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=drone_controller.HEIGHT, duration=drone_controller.DURATION)
     if response is not None:
         drone_controller.get_logger().info('Takeoff command executed successfully')
