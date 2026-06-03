@@ -8,7 +8,7 @@ import numpy as np
 from rclpy.duration import Duration as RCLDuration
 from builtin_interfaces.msg import Duration
 import tf2_ros
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Vector3
 
 #Simple indexing
 X_DIR = ROLL = 0
@@ -37,6 +37,7 @@ class DroneController(Node):
         while not self.cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
         self.cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        self.des_heading_sub = self.create_subscription(Vector3, f'{self.drone_name}/desired_heading', self.des_heading_callback, 10)
 
         self.create_timer(1.0 / self.UPDATE_RATE, self.update)
         self.prev_time = self.get_clock().now()
@@ -50,7 +51,7 @@ class DroneController(Node):
         self.vel = np.array([0.0, 0.0, 0.0])
         self.acc = np.array([0.0, 0.0, 0.0])
 
-        self.vel_desired = np.array([0.0, 0.0, HOVER_SPEED_SIM])
+        self.vel_desired = np.array([0.0, 0.0, 0.0])
 
         self.movement_msg = FullState()
         self.movement_msg.acc.x = 0.0
@@ -83,7 +84,16 @@ class DroneController(Node):
         self.last_teleop_msg_time = self.get_clock().now()
         self.set_speeds([msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z])
 
+    def des_heading_callback(self, msg: Vector3):
+        self.should_hover = False
+        v = np.array([msg.x, msg.y, msg.z])         # pack the 3 components into a vector
+        norm = np.linalg.norm(v)                    # compute magnitude: sqrt(x² + y² + z²)
+        if norm > 0:                                # guard against  zero vector (would divide by zero)
+            v = v / norm                            # divide each component by magnitude → unit vector
     
+        self.set_speeds(self.max_speed * v)         # scale unit vector to desired speed
+
+
     def update(self):
         now = self.get_clock().now()
         dt = (now - self.prev_time).nanoseconds * 1e-9

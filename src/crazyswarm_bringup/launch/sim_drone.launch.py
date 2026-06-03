@@ -27,8 +27,8 @@ def generate_launch_description():
 
     crazyflie_controller = Node(
         package='crazyflie_controller',
-        executable='drone_controller',
-        name='drone_controller',
+        executable='controller_server',
+        name='controller_server',
         output='screen',
         parameters=[{'drone_name': 'cf01'}, {'use_sim_odom': True}],
     )
