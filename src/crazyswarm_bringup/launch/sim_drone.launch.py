@@ -30,7 +30,7 @@ def generate_launch_description():
         executable='drone_controller',
         name='drone_controller',
         output='screen',
-        parameters=[{'drone_name': 'cf01'}],
+        parameters=[{'drone_name': 'cf01'}, {'use_sim_odom': True}],
     )
 
     return LaunchDescription([
