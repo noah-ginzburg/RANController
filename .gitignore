@@ -1,6 +1,5 @@
 # External repos
 crazyflie-firmware/
-src/crazyswarm2/
 CollectiPy/
 
 # ROS2 build artifacts
