@@ -105,6 +105,7 @@ class DroneController(Node):
         if time_from_teleop > self.teleop_timeout:
             self.set_speeds(vel_desired)
             self.get_logger().info(f'setting velocity to {vel_desired}')
+            #self.should_hover = True
 
         elif(self.should_hover):    
             self.hover()
