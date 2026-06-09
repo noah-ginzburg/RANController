@@ -16,12 +16,14 @@ Y_DIR = PITCH = 1
 Z_DIR = YAW = 2
 
 #Constant hovering speed    
-HOVER_SPEED_SIM = 0.17850
+HOVER_SPEED_SIM = 0.23
+# HOVER_SPEED_SIM = 0.0
+
 
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
     GROUP_MASK = 0  #0 = all drones
-    HEIGHT = 0.5   #Desired launch height
+    HEIGHT = 1.0   #Desired launch height
     DURATION = Duration(sec=3, nanosec=0)   #Time to reach the desired height
 
 
@@ -44,7 +46,7 @@ class DroneController(Node):
         self.now = 0.0
 
         self.w_abs_desired = 0.0
-        self.max_speed = 0.25
+        self.max_speed = 2.0
 
         self.pos = np.array([0.0, 0.0, 0.0])
         self.prev_pos = np.array([0.0, 0.0, 0.0])
@@ -60,13 +62,14 @@ class DroneController(Node):
         self.movement_pub = self.create_publisher(FullState, f'{self.drone_name}/cmd_full_state', 10)
 
         self.should_hover = False
+        self.taking_off = True
         self.tf_ready = False
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.prev_trans = None
 
         self.last_teleop_msg_time = self.get_clock().now()
-        self.teleop_timeout = RCLDuration(seconds=3.0)
+        self.teleop_timeout = RCLDuration(seconds=0.5)
 
 
     def send_takeoff_req(self, group_mask, height, duration):
@@ -84,47 +87,57 @@ class DroneController(Node):
         self.last_teleop_msg_time = self.get_clock().now()
         self.set_speeds([msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z])
 
+    SNAP_THRESHOLD = 0.05
+
+    def _snap_vector(self, v):
+        v[np.abs(v) < self.SNAP_THRESHOLD] = 0.0
+        norm = np.linalg.norm(v)
+        return v / norm if norm > 0 else v
+
     def des_heading_callback(self, msg: Vector3):
         self.should_hover = False
-        v = np.array([msg.x, msg.y, msg.z])         # pack the 3 components into a vector
-        norm = np.linalg.norm(v)                    # compute magnitude: sqrt(x² + y² + z²)
-        if norm > 0:                                # guard against  zero vector (would divide by zero)
-            v = v / norm                            # divide each component by magnitude → unit vector
-    
-        self.set_speeds(self.max_speed * v)         # scale unit vector to desired speed
+        self.last_teleop_msg_time = self.get_clock().now()
+
+        v = np.array([msg.x, msg.y, msg.z])
+        norm = np.linalg.norm(v)
+        if norm > 0:
+            v = self._snap_vector(v / norm)
+
+        self.set_speeds(self.max_speed * v)
+
+        self.get_logger().info(f'setting speeds to {self.max_speed * v}')
 
 
     def update(self):
         now = self.get_clock().now()
         dt = (now - self.prev_time).nanoseconds * 1e-9
+
+        
+
+        self.vel_desired = np.array([0.0, 0.0, 0.0])
+
         time_from_teleop = now - self.last_teleop_msg_time
 
-        #TESTING 
-        vel_desired = np.array([0.0, 0.0, 0.0])
-            
-        if time_from_teleop > self.teleop_timeout:
-            self.set_speeds(vel_desired)
-            self.get_logger().info(f'setting velocity to {vel_desired}')
-            #self.should_hover = True
-
-        elif(self.should_hover):    
+        if time_from_teleop > self.teleop_timeout or self.should_hover:
             self.hover()
-            self.get_logger().info(f'forcing drone to hover')
-        else: 
-            self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity commands.")
+        # else:
+            # self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
 
         if self.use_sim_odom: self._update_sim(dt)
         else: self._update_real(dt)
 
         if not self.tf_ready:
+            self.get_logger().warn("No tf ready, exiting update loop")
             return
+
+        
 
         self.movement_msg.header.stamp = self.get_clock().now().to_msg()
         self.movement_msg.header.frame_id = self.drone_name
         self.movement_pub.publish(self.movement_msg)
 
-        self.prev_time = now
-        self.prev_pos = self.pos    
+        self.prev_time = now    
+        self.prev_pos = self.pos
 
     def set_speeds(self, lin_speeds, ang_speeds=None):
         self.movement_msg.twist.linear.x = lin_speeds[X_DIR]
@@ -141,7 +154,7 @@ class DroneController(Node):
     def hover(self): self.set_speeds(np.array([0.0, 0.0, 0.0]))
 
     def _update_sim(self, dt):
-        if not self.tf_buffer.can_transform('mocap', self.drone_name, rclpy.time.Time()):
+        if not self.tf_buffer.can_transform('mocap', self.drone_name, rclpy.time.Time()): 
             return
         try:
             trans = self.tf_buffer.lookup_transform('mocap', f'{self.drone_name}', rclpy.time.Time(), RCLDuration(seconds=1.0))
@@ -150,14 +163,13 @@ class DroneController(Node):
             self.should_hover = True
             return
         
-        self.tf_ready = True
         self.movement_msg.pose.position.x = self.pos[X_DIR] = trans.transform.translation.x
         self.movement_msg.pose.position.y = self.pos[Y_DIR] = trans.transform.translation.y
         self.movement_msg.pose.position.z = self.pos[Z_DIR] = trans.transform.translation.z
         self.movement_msg.pose.orientation = trans.transform.rotation
 
         self.vel = (self.pos - self.prev_pos)/dt
-
+        self.tf_ready = True
         self.prev_trans = trans
 
     def _update_real(self):
@@ -176,6 +188,7 @@ def main(args=None):
         drone_controller.get_logger().error('Takeoff service call failed')
 
     time.sleep(drone_controller.DURATION.sec)
+
     rclpy.spin(drone_controller)
     drone_controller.destroy_node()
     rclpy.shutdown()

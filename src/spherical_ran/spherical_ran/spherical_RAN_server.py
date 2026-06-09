@@ -1,4 +1,5 @@
 import os
+import time
 import rclpy
 from rclpy.node import Node
 import numpy as np
@@ -21,9 +22,9 @@ class SphericalRANServer(Node):
         self.declare_parameter('drone_name', 'cf01') # declare
         self.declare_parameter('beta', 1.0)
         self.declare_parameter('v', 0.5)
-        self.declare_parameter('sigma', 1.5)
+        self.declare_parameter('sigma', 0.1)
         self.declare_parameter('kappa', 20.0)
-        self.declare_parameter('u', 15.0)
+        self.declare_parameter('u', 10.0)
         self.declare_parameter('J', 5.0)
         self.declare_parameter('n_sub', 3)
 
@@ -61,7 +62,7 @@ class SphericalRANServer(Node):
         ##Replace with vicon later        
         target1 = [1.0, 0, np.pi/2, 20.0]   #distance, phi, theta, quality
         target2 = [1.0, (-np.pi), np.pi/2, 20.0]   #distance, phi, theta, quality
-        self.targets = [target1, target2]
+        self.targets = [target1]
 
         self.heading_pub = self.create_publisher(Vector3, f'{self.drone_name}/desired_heading', 10)
         self.timer = self.create_timer((1.0/RAN_UPDATE_RATE), self.update)
@@ -85,7 +86,7 @@ class SphericalRANServer(Node):
             vec = vec / norm
         self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
         self.heading_pub.publish(self.heading_msg)
-        self.get_logger().info(f'publishing {self.heading_msg}')
+        # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
 
         self.prev_time = now
         
@@ -156,6 +157,7 @@ def main(args=None):
 
     spherical_ran_server = SphericalRANServer()
 
+    time.sleep(5.0)
     rclpy.spin(spherical_ran_server)
 
     # Destroy the node explicitly
