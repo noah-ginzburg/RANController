@@ -46,7 +46,7 @@ class DroneController(Node):
         self.now = 0.0
 
         self.w_abs_desired = 0.0
-        self.max_speed = 2.0
+        self.max_speed = 0.25
 
         self.pos = np.array([0.0, 0.0, 0.0])
         self.prev_pos = np.array([0.0, 0.0, 0.0])

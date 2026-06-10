@@ -3,13 +3,28 @@ import time
 import rclpy
 from rclpy.node import Node
 import numpy as np
-from geometry_msgs.msg import Vector3
+from geometry_msgs.msg import Vector3, Point
+from std_msgs.msg import ColorRGBA
+
 import pyvista as pv
 from rclpy.duration import Duration as RCLDuration
+from visualization_msgs.msg import Marker, MarkerArray
+
 
 #vicon imports
 
 RAN_UPDATE_RATE = 50    #hz
+RAN_VIS_RADIUS = 0.1    #m, radius of the displayed icosphere
+RAN_VIS_POINT_SIZE = 0.007   #m, size of each node marker
+RAN_VIS_Z_OFFSET = 0.015  #m, shift of the icosphere along the drone's z axis (tune to recenter on the body)
+RAN_VIS_Z_MIN = -1.0    #activation value mapped to the cold end of the colormap
+RAN_VIS_Z_MAX = 2.0     #activation value mapped to the hot end of the colormap
+RAN_VIS_COLORMAP = (    #blue -> cyan -> yellow -> red
+    (0.0, 0.0, 1.0),
+    (0.0, 1.0, 1.0),
+    (1.0, 1.0, 0.0),
+    (1.0, 0.0, 0.0),
+)
 X = MAG = 0
 Y = PHI = 1     #phi = xy angle
 Z = THETA = 2   #theta = z axis angle
@@ -20,6 +35,8 @@ class SphericalRANServer(Node):
     def __init__(self):
         super().__init__('spherical_RAN_server')
         self.declare_parameter('drone_name', 'cf01') # declare
+        self.declare_parameter('ran_vis', True) # declare
+
         self.declare_parameter('beta', 1.0)
         self.declare_parameter('v', 0.5)
         self.declare_parameter('sigma', 0.1)
@@ -30,6 +47,7 @@ class SphericalRANServer(Node):
 
 
         self.drone_name = self.get_parameter('drone_name').value    #drone name parameter
+        self.ran_vis = self.get_parameter('ran_vis').value  
         self.beta = self.get_parameter('beta').value
         self.v = self.get_parameter('v').value
         self.sigma = self.get_parameter('sigma').value
@@ -65,6 +83,7 @@ class SphericalRANServer(Node):
         self.targets = [target1]
 
         self.heading_pub = self.create_publisher(Vector3, f'{self.drone_name}/desired_heading', 10)
+        self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz', 10)
         self.timer = self.create_timer((1.0/RAN_UPDATE_RATE), self.update)
         self.heading_msg = Vector3()
         self.heading_msg.x = 0.0
@@ -88,8 +107,65 @@ class SphericalRANServer(Node):
         self.heading_pub.publish(self.heading_msg)
         # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
 
+        if self.ran_vis:
+            self._display_ran_rviz(self.nodes, self.z, vec)
+
         self.prev_time = now
-        
+
+    def _display_ran_rviz(self, nodes, activations, heading_vec):
+        stamp = rclpy.time.Time().to_msg()  # zero stamp -> tf2 uses latest available transform
+        cart_nodes = np.array(self._polar_to_cartesian_3D(nodes)) * RAN_VIS_RADIUS
+
+        nodes_marker = Marker()
+        nodes_marker.header.stamp = stamp
+        nodes_marker.header.frame_id = self.drone_name
+        nodes_marker.ns = 'ran_nodes'
+        nodes_marker.id = 0
+        nodes_marker.type = Marker.POINTS
+        nodes_marker.action = Marker.ADD
+        nodes_marker.scale.x = RAN_VIS_POINT_SIZE
+        nodes_marker.scale.y = RAN_VIS_POINT_SIZE
+        nodes_marker.pose.position.z = RAN_VIS_Z_OFFSET
+
+        z_range = RAN_VIS_Z_MAX - RAN_VIS_Z_MIN
+
+        for i in range(len(cart_nodes)):
+            nodes_marker.points.append(Point(x=float(cart_nodes[i, X]), y=float(cart_nodes[i, Y]), z=float(cart_nodes[i, Z])))
+            t = (activations[i] - RAN_VIS_Z_MIN) / z_range
+            nodes_marker.colors.append(self._activation_to_color(t))
+
+        heading_marker = Marker()
+        heading_marker.header.stamp = stamp
+        heading_marker.header.frame_id = self.drone_name
+        heading_marker.ns = 'ran_heading'
+        heading_marker.id = 0
+        heading_marker.type = Marker.ARROW
+        heading_marker.action = Marker.ADD
+        heading_marker.pose.position.z = RAN_VIS_Z_OFFSET
+        heading_marker.scale.x = RAN_VIS_POINT_SIZE         #shaft diameter
+        heading_marker.scale.y = RAN_VIS_POINT_SIZE * 2.0   #head diameter
+        heading_marker.scale.z = RAN_VIS_POINT_SIZE * 3.0   #head length
+        heading_marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=1.0)
+        heading_marker.points = [
+            Point(x=0.0, y=0.0, z=0.0),
+            Point(x=float(heading_vec[X]) * RAN_VIS_RADIUS * 1.5,
+                  y=float(heading_vec[Y]) * RAN_VIS_RADIUS * 1.5,
+                  z=float(heading_vec[Z]) * RAN_VIS_RADIUS * 1.5),
+        ]
+
+        self.vis_pub.publish(MarkerArray(markers=[nodes_marker, heading_marker]))
+
+    def _activation_to_color(self, t):
+        t = float(np.clip(t, 0.0, 1.0))
+        stops = RAN_VIS_COLORMAP
+        seg = t * (len(stops) - 1)
+        i = min(int(seg), len(stops) - 2)
+        f = seg - i
+        r = stops[i][0] + f * (stops[i + 1][0] - stops[i][0])
+        g = stops[i][1] + f * (stops[i + 1][1] - stops[i][1])
+        b = stops[i][2] + f * (stops[i + 1][2] - stops[i][2])
+        return ColorRGBA(r=r, g=g, b=b, a=1.0)
+
     def _generate_nodes(self, n_sub):
         nodes = pv.Icosphere(radius=1.0, nsub=n_sub)
         return nodes.points
