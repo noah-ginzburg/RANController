@@ -28,7 +28,7 @@ def launch_controllers(context, *args, **kwargs):
                 executable='spherical_RAN_server',
                 name=f'spherical_RAN_server_{name}',
                 output='screen',
-                parameters=[{'drone_name': name}],
+                parameters=[{'drone_name': name}, {'all_drones': drone_names}],
             ))
 
     return actions

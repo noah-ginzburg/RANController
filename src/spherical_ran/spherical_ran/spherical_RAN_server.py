@@ -1,5 +1,6 @@
 import os
 import time
+
 import rclpy
 from rclpy.node import Node
 import numpy as np
@@ -7,21 +8,20 @@ from geometry_msgs.msg import Vector3, Point
 from std_msgs.msg import ColorRGBA
 
 import pyvista as pv
+import tf2_ros
 from rclpy.duration import Duration as RCLDuration
 from visualization_msgs.msg import Marker, MarkerArray
 
 
-#vicon imports
-
 RAN_UPDATE_RATE = 50    #hz
 RAN_VIS_RADIUS = 0.1    #m, radius of the displayed icosphere
 RAN_VIS_POINT_SIZE = 0.007   #m, size of each node marker
-RAN_VIS_Z_OFFSET = 0.015  #m, shift of the icosphere along the drone's z axis (tune to recenter on the body)
+RAN_VIS_Z_OFFSET = 0.015    #m, shift of the icosphere along the drone's z axis (tune to recenter on the body)
 RAN_VIS_Z_MIN = -1.0    #activation value mapped to the cold end of the colormap
 RAN_VIS_Z_MAX = 2.0     #activation value mapped to the hot end of the colormap
 RAN_VIS_COLORMAP = (    #blue -> cyan -> yellow -> red
     (0.0, 0.0, 1.0),
-    (0.0, 1.0, 1.0),
+    (0.0, 1.0, 1.0),    
     (1.0, 1.0, 0.0),
     (1.0, 0.0, 0.0),
 )
@@ -41,26 +41,37 @@ class SphericalRANServer(Node):
         self.declare_parameter('v', 0.5)
         self.declare_parameter('sigma', 0.1)
         self.declare_parameter('kappa', 20.0)
-        self.declare_parameter('u', 10.0)
+        self.declare_parameter('u', 2.05)
+        self.declare_parameter('rate', 12.0)
         self.declare_parameter('J', 5.0)
         self.declare_parameter('n_sub', 3)
+        self.declare_parameter('all_drones', [''])
+        self.declare_parameter('target_quality', 20.0)
 
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.drone_name = self.get_parameter('drone_name').value    #drone name parameter
-        self.ran_vis = self.get_parameter('ran_vis').value  
+        self.ran_vis = self.get_parameter('ran_vis').value
         self.beta = self.get_parameter('beta').value
         self.v = self.get_parameter('v').value
         self.sigma = self.get_parameter('sigma').value
         self.kappa = self.get_parameter('kappa').value
         self.u = self.get_parameter('u').value
+        self.rate = self.get_parameter('rate').value
         self.J = self.get_parameter('J').value
         self.n_sub = self.get_parameter('n_sub').value
+        self.target_quality = self.get_parameter('target_quality').value
+
+        all_drones = self.get_parameter('all_drones').value
+        self.other_drones = [d for d in all_drones if d != self.drone_name]
+        # self.other_drones = ['cf02']
 
         self.nodes = self._generate_nodes(self.n_sub)
         self.num_nodes = len(self.nodes)
         self.dt = 0.0
         self.z = np.zeros(self.num_nodes)
-        
+
         cache_path = 'src/spherical_ran/spherical_ran/kernel_cache.npz'
         try:
             data = np.load(cache_path)
@@ -77,10 +88,7 @@ class SphericalRANServer(Node):
                 f'kernel cache unusable ({e}). Run generate_kernel_cache.py and restart.')
             raise RuntimeError(f'kernel cache unusable: {e}') from e
 
-        ##Replace with vicon later        
-        target1 = [1.0, 0, np.pi/2, 20.0]   #distance, phi, theta, quality
-        target2 = [1.0, (-np.pi), np.pi/2, 20.0]   #distance, phi, theta, quality
-        self.targets = [target1]
+        self.targets = []
 
         self.heading_pub = self.create_publisher(Vector3, f'{self.drone_name}/desired_heading', 10)
         self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz', 10)
@@ -95,9 +103,25 @@ class SphericalRANServer(Node):
         now = self.get_clock().now()
         self.dt = (now - self.prev_time).nanoseconds * 1e-9
 
+        self.targets = self._get_targets_from_tf()
+
         b = self._generate_sensory_input(self.nodes, self.targets, self.kappa)
+        if self.targets:
+            peak = self.nodes[np.argmax(b)]
+            self.get_logger().info(
+                f'target phi={self.targets[0][PHI]:.3f} theta={self.targets[0][THETA]:.3f} | '
+                f'b_peak phi={peak[PHI]:.3f} theta={peak[THETA]:.3f} (b={np.max(b):.3f})'
+            )
         noise = self._rand_link_func(self.z, self.sigma * np.sqrt(self.dt), 1.0/np.sqrt(self.num_nodes))
-        self.z = self.z + self.dt * (-(self.z) + np.tanh(self.u * (self.M @ self.z) + b - self.beta) - np.tanh(-self.beta) + noise)
+        self.z = (self.z
+            + self.dt * self.rate * (-(self.z) + np.tanh(self.u * (self.M @ self.z) + b - self.beta) - np.tanh(-self.beta))
+            + np.sqrt(self.rate) * noise)
+        if self.targets:
+            zpeak = self.nodes[np.argmax(self.z)]
+            self.get_logger().info(
+                f'z_peak phi={zpeak[PHI]:.3f} theta={zpeak[THETA]:.3f} '
+                f'(z={np.max(self.z):.3f}, sum_z={np.sum(self.z):.3f})'
+            )
 
         vec = self._find_vel_avg_3D(self.nodes, self.z)
         norm = np.linalg.norm(vec)
@@ -111,6 +135,19 @@ class SphericalRANServer(Node):
             self._display_ran_rviz(self.nodes, self.z, vec)
 
         self.prev_time = now
+
+    def _get_targets_from_tf(self):
+        targets = []
+        for other in self.other_drones:
+            try:
+                trans = self.tf_buffer.lookup_transform(self.drone_name, other, rclpy.time.Time())
+            except tf2_ros.TransformException:
+                continue
+            t = trans.transform.translation
+            polar = self._cartesian_to_polar_3D(np.array([[t.x, t.y, t.z]]))[0]
+            targets.append([polar[MAG], polar[PHI], (polar[THETA]), self.target_quality])
+            self.get_logger().info(f'cf02/cf01: {t}')
+        return targets
 
     def _display_ran_rviz(self, nodes, activations, heading_vec):
         stamp = rclpy.time.Time().to_msg()  # zero stamp -> tf2 uses latest available transform
@@ -174,7 +211,7 @@ class SphericalRANServer(Node):
     def _generate_sensory_input(self, sphere_points, targets, kappa):
         num_nodes = len(sphere_points)
         b = np.zeros(num_nodes)
-
+        
         for j in range(len(targets)):
             for i in range(num_nodes):
                 target_point = np.array((targets[j][MAG], targets[j][PHI], targets[j][THETA])) 
@@ -195,9 +232,10 @@ class SphericalRANServer(Node):
         return out
     
     def _find_vel_avg_3D(self, points, activations):
-        actv = activations.copy()
         points = np.array(self._polar_to_cartesian_3D(points))
         total_weight = np.sum(activations)
+        if total_weight == 0:
+            return np.zeros(3)
         x_bar = np.sum(points[:, X] * activations) / total_weight
         y_bar = np.sum(points[:, Y] * activations) / total_weight
         z_bar = np.sum(points[:, Z] * activations) / total_weight
