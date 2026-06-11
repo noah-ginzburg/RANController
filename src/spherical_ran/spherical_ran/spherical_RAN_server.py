@@ -37,11 +37,11 @@ class SphericalRANServer(Node):
         self.declare_parameter('drone_name', 'cf01') # declare
         self.declare_parameter('ran_vis', True) # declare
 
-        self.declare_parameter('beta', 1.0)
+        self.declare_parameter('beta', 1.5)
         self.declare_parameter('v', 0.5)
-        self.declare_parameter('sigma', 0.1)
+        self.declare_parameter('sigma', 0.5)
         self.declare_parameter('kappa', 20.0)
-        self.declare_parameter('u', 2.05)
+        self.declare_parameter('u', 4.5)
         self.declare_parameter('rate', 12.0)
         self.declare_parameter('J', 5.0)
         self.declare_parameter('n_sub', 3)
@@ -65,7 +65,7 @@ class SphericalRANServer(Node):
 
         all_drones = self.get_parameter('all_drones').value
         self.other_drones = [d for d in all_drones if d != self.drone_name]
-        # self.other_drones = ['cf02']
+        # self.other_drones =  ['cf02']
 
         self.nodes = self._generate_nodes(self.n_sub)
         self.num_nodes = len(self.nodes)
@@ -89,6 +89,7 @@ class SphericalRANServer(Node):
             raise RuntimeError(f'kernel cache unusable: {e}') from e
 
         self.targets = []
+        self.drone_world_pos = np.zeros(3)
 
         self.heading_pub = self.create_publisher(Vector3, f'{self.drone_name}/desired_heading', 10)
         self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz', 10)
@@ -108,20 +109,20 @@ class SphericalRANServer(Node):
         b = self._generate_sensory_input(self.nodes, self.targets, self.kappa)
         if self.targets:
             peak = self.nodes[np.argmax(b)]
-            self.get_logger().info(
-                f'target phi={self.targets[0][PHI]:.3f} theta={self.targets[0][THETA]:.3f} | '
-                f'b_peak phi={peak[PHI]:.3f} theta={peak[THETA]:.3f} (b={np.max(b):.3f})'
-            )
+            # self.get_logger().info(
+            #     f'target phi={self.targets[0][PHI]:.3f} theta={self.targets[0][THETA]:.3f} | '
+            #     f'b_peak phi={peak[PHI]:.3f} theta={peak[THETA]:.3f} (b={np.max(b):.3f})'
+            # )
         noise = self._rand_link_func(self.z, self.sigma * np.sqrt(self.dt), 1.0/np.sqrt(self.num_nodes))
         self.z = (self.z
             + self.dt * self.rate * (-(self.z) + np.tanh(self.u * (self.M @ self.z) + b - self.beta) - np.tanh(-self.beta))
             + np.sqrt(self.rate) * noise)
         if self.targets:
             zpeak = self.nodes[np.argmax(self.z)]
-            self.get_logger().info(
-                f'z_peak phi={zpeak[PHI]:.3f} theta={zpeak[THETA]:.3f} '
-                f'(z={np.max(self.z):.3f}, sum_z={np.sum(self.z):.3f})'
-            )
+            # self.get_logger().info(
+            #     f'z_peak phi={zpeak[PHI]:.3f} theta={zpeak[THETA]:.3f} '
+            #     f'(z={np.max(self.z):.3f}, sum_z={np.sum(self.z):.3f})'
+            # )
 
         vec = self._find_vel_avg_3D(self.nodes, self.z)
         norm = np.linalg.norm(vec)
@@ -138,15 +139,25 @@ class SphericalRANServer(Node):
 
     def _get_targets_from_tf(self):
         targets = []
+        try:
+            self_trans = self.tf_buffer.lookup_transform('mocap', self.drone_name, rclpy.time.Time())
+        except tf2_ros.TransformException:
+            return targets
+
+        self_t = self_trans.transform.translation
+        self_pos = np.array([self_t.x, self_t.y, self_t.z])
+        self.drone_world_pos = self_pos
+
         for other in self.other_drones:
             try:
-                trans = self.tf_buffer.lookup_transform(self.drone_name, other, rclpy.time.Time())
+                other_trans = self.tf_buffer.lookup_transform('mocap', other, rclpy.time.Time())
             except tf2_ros.TransformException:
                 continue
-            t = trans.transform.translation
-            polar = self._cartesian_to_polar_3D(np.array([[t.x, t.y, t.z]]))[0]
+            other_t = other_trans.transform.translation
+            other_pos = np.array([other_t.x, other_t.y, other_t.z])
+            relative = other_pos - self_pos
+            polar = self._cartesian_to_polar_3D(np.array([relative]))[0]
             targets.append([polar[MAG], polar[PHI], (polar[THETA]), self.target_quality])
-            self.get_logger().info(f'cf02/cf01: {t}')
         return targets
 
     def _display_ran_rviz(self, nodes, activations, heading_vec):
@@ -155,14 +166,17 @@ class SphericalRANServer(Node):
 
         nodes_marker = Marker()
         nodes_marker.header.stamp = stamp
-        nodes_marker.header.frame_id = self.drone_name
+        nodes_marker.header.frame_id = 'mocap'
         nodes_marker.ns = 'ran_nodes'
         nodes_marker.id = 0
         nodes_marker.type = Marker.POINTS
         nodes_marker.action = Marker.ADD
         nodes_marker.scale.x = RAN_VIS_POINT_SIZE
         nodes_marker.scale.y = RAN_VIS_POINT_SIZE
-        nodes_marker.pose.position.z = RAN_VIS_Z_OFFSET
+        nodes_marker.pose.position.x = float(self.drone_world_pos[X])
+        nodes_marker.pose.position.y = float(self.drone_world_pos[Y])
+        nodes_marker.pose.position.z = float(self.drone_world_pos[Z]) + RAN_VIS_Z_OFFSET
+        nodes_marker.pose.orientation.w = 1.0
 
         z_range = RAN_VIS_Z_MAX - RAN_VIS_Z_MIN
 
@@ -173,12 +187,15 @@ class SphericalRANServer(Node):
 
         heading_marker = Marker()
         heading_marker.header.stamp = stamp
-        heading_marker.header.frame_id = self.drone_name
+        heading_marker.header.frame_id = 'mocap'
         heading_marker.ns = 'ran_heading'
         heading_marker.id = 0
         heading_marker.type = Marker.ARROW
         heading_marker.action = Marker.ADD
-        heading_marker.pose.position.z = RAN_VIS_Z_OFFSET
+        heading_marker.pose.position.x = float(self.drone_world_pos[X])
+        heading_marker.pose.position.y = float(self.drone_world_pos[Y])
+        heading_marker.pose.position.z = float(self.drone_world_pos[Z]) + RAN_VIS_Z_OFFSET
+        heading_marker.pose.orientation.w = 1.0
         heading_marker.scale.x = RAN_VIS_POINT_SIZE         #shaft diameter
         heading_marker.scale.y = RAN_VIS_POINT_SIZE * 2.0   #head diameter
         heading_marker.scale.z = RAN_VIS_POINT_SIZE * 3.0   #head length

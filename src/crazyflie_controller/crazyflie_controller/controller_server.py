@@ -120,6 +120,8 @@ class DroneController(Node):
 
         if time_from_teleop > self.teleop_timeout or self.should_hover:
             self.hover()
+            # self.get_logger().warn(f'drone {self.drone_name} hovering.')
+
         # else:
             # self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
 
