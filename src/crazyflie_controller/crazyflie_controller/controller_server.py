@@ -9,6 +9,8 @@ from rclpy.duration import Duration as RCLDuration
 from builtin_interfaces.msg import Duration
 import tf2_ros
 from geometry_msgs.msg import Twist, Vector3
+from rclpy.signals import SignalHandlerOptions
+
 
 #Simple indexing
 X_DIR = ROLL = 0
@@ -36,6 +38,9 @@ class DroneController(Node):
         self.use_sim_odom = self.get_parameter('use_sim_odom').value
 
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
+        self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
+
+
         while not self.cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
         self.cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
@@ -62,6 +67,7 @@ class DroneController(Node):
         self.movement_pub = self.create_publisher(FullState, f'{self.drone_name}/cmd_full_state', 10)
 
         self.should_hover = False
+        self.should_land = False
         self.taking_off = True
         self.tf_ready = False
         self.tf_buffer = tf2_ros.Buffer()
@@ -79,6 +85,16 @@ class DroneController(Node):
         req.duration = duration
 
         self.future = self.cli.call_async(req)
+        rclpy.spin_until_future_complete(self, self.future)
+        return self.future.result()
+
+    def send_land_req(self, group_mask, height, duration):
+        req = Land.Request()
+        req.group_mask = group_mask
+        req.height = height
+        req.duration = duration
+
+        self.future = self.land_cli.call_async(req)
         rclpy.spin_until_future_complete(self, self.future)
         return self.future.result()
 
@@ -124,7 +140,7 @@ class DroneController(Node):
 
         # else:
             # self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
-
+        
         if self.use_sim_odom: self._update_sim(dt)
         else: self._update_real(dt)
 
@@ -132,7 +148,7 @@ class DroneController(Node):
             self.get_logger().warn("No tf ready, exiting update loop")
             return
 
-        
+        if self.should_land: return
 
         self.movement_msg.header.stamp = self.get_clock().now().to_msg()
         self.movement_msg.header.frame_id = self.drone_name
@@ -179,7 +195,7 @@ class DroneController(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)    
     drone_controller = DroneController()
 
     #
@@ -190,8 +206,21 @@ def main(args=None):
         drone_controller.get_logger().error('Takeoff service call failed')
 
     time.sleep(drone_controller.DURATION.sec)
+    
+    try:
+        rclpy.spin(drone_controller)
+    except KeyboardInterrupt:
+        drone_controller.get_logger().info(f'User hit Ctrl+C. Attempting to land drone {drone_controller.drone_name}.')
+        try:
+            drone_controller.should_land = True
+            land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=drone_controller.pos[Z_DIR], duration=drone_controller.DURATION)
+            drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land.')
+            if land_resp is not None: time.sleep(drone_controller.DURATION.sec)
+        except KeyboardInterrupt:
+            drone_controller.get_logger().warn(f'User hit Ctrl+C again. Attempting rclpy shutdown.')
+            pass
+        pass    
 
-    rclpy.spin(drone_controller)
     drone_controller.destroy_node()
     rclpy.shutdown()
 
