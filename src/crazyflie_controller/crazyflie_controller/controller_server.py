@@ -25,7 +25,7 @@ HOVER_SPEED_SIM = 0.23
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
     GROUP_MASK = 0  #0 = all drones
-    HEIGHT = 1.0   #Desired launch height
+    HEIGHT = 3.0   #Desired launch height
     DURATION = Duration(sec=3, nanosec=0)   #Time to reach the desired height
 
 
@@ -211,9 +211,12 @@ def main(args=None):
         rclpy.spin(drone_controller)
     except KeyboardInterrupt:
         drone_controller.get_logger().info(f'User hit Ctrl+C. Attempting to land drone {drone_controller.drone_name}.')
-        try:
-            drone_controller.should_land = True
-            land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=drone_controller.pos[Z_DIR], duration=drone_controller.DURATION)
+        drone_controller.should_land = True
+        try:    
+            # land_height = -drone_controller.HEIGHT - drone_controller.pos[Z_DIR]
+            land_height = -drone_controller.pos[Z_DIR]
+            land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=land_height, duration=drone_controller.DURATION)
+            # drone_controller.get_logger().fatal(f'land_height: {land_height}')
             drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land.')
             if land_resp is not None: time.sleep(drone_controller.DURATION.sec)
         except KeyboardInterrupt:
