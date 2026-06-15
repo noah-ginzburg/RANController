@@ -116,8 +116,8 @@ class DroneController(Node):
 
         v = np.array([msg.x, msg.y, msg.z])
         norm = np.linalg.norm(v)
-        if norm > 0:
-            v = self._snap_vector(v / norm)
+        # if norm > 0:
+        #     v = self._snap_vector(v / norm)
 
         self.set_speeds(self.max_speed * v)
 
@@ -127,8 +127,6 @@ class DroneController(Node):
     def update(self):
         now = self.get_clock().now()
         dt = (now - self.prev_time).nanoseconds * 1e-9
-
-        
 
         self.vel_desired = np.array([0.0, 0.0, 0.0])
 

@@ -30,6 +30,13 @@ Y = PHI = 1     #phi = xy angle
 Z = THETA = 2   #theta = z axis angle
 QUALITY = 3
 
+# Per-target gamma (quality) overrides, keyed by drone name.
+# Any drone not listed here falls back to the 'target_quality' parameter.
+TARGET_QUALITY_OVERRIDES = {
+    'cf02': 75.0,
+    'cf03': 20.0,
+}
+
 class SphericalRANServer(Node):
 
     def __init__(self):
@@ -42,7 +49,7 @@ class SphericalRANServer(Node):
         self.declare_parameter('sigma', 0.5)
         self.declare_parameter('kappa', 20.0)
         self.declare_parameter('u', 4.5)
-        self.declare_parameter('rate', 12.0)
+        self.declare_parameter('rate', 1.0)
         self.declare_parameter('J', 5.0)
         self.declare_parameter('n_sub', 3)
         self.declare_parameter('all_drones', [''])
@@ -102,7 +109,8 @@ class SphericalRANServer(Node):
 
     def update(self):
         now = self.get_clock().now()
-        self.dt = (now - self.prev_time).nanoseconds * 1e-9
+        # self.dt = (now - self.prev_time).nanoseconds * 1e-9
+        self.dt = 0.4
 
         self.targets = self._get_targets_from_tf()
 
@@ -157,7 +165,8 @@ class SphericalRANServer(Node):
             other_pos = np.array([other_t.x, other_t.y, other_t.z])
             relative = other_pos - self_pos
             polar = self._cartesian_to_polar_3D(np.array([relative]))[0]
-            targets.append([polar[MAG], polar[PHI], (polar[THETA]), self.target_quality])
+            quality = TARGET_QUALITY_OVERRIDES.get(other, self.target_quality)
+            targets.append([polar[MAG], polar[PHI], (polar[THETA]), quality])
         return targets
 
     def _display_ran_rviz(self, nodes, activations, heading_vec):

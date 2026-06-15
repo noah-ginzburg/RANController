@@ -47,7 +47,7 @@ def generate_launch_description():
         launch_arguments={
             'backend': 'sim',
             'mocap': 'False',
-            'rviz': 'False',
+            'rviz': 'True',
             'gui': 'False',
             'rviz_config_file': os.path.join(
                 get_package_share_directory('crazyswarm_bringup'),

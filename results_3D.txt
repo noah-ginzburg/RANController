@@ -1,0 +1,12 @@
+Assuming +Y is positive (moving towards two drones):
+Right:20 
+Left:10
+
+Targets: equal quality of 20 ^^
+Trial 1 
+-------------------------
+Trial2 without snap:
+Right:19
+Left:21
+
+
