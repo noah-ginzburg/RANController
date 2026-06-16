@@ -189,7 +189,7 @@ class DroneController(Node):
         self.prev_trans = trans
 
     def _update_real(self):
-        test = 1
+        
 
 
 def main(args=None):
