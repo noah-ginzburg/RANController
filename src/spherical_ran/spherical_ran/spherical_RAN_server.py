@@ -30,35 +30,31 @@ Y = PHI = 1     #phi = xy angle
 Z = THETA = 2   #theta = z axis angle
 QUALITY = 3
 
-# Per-target gamma (quality) overrides, keyed by drone name.
-# Any drone not listed here falls back to the 'target_quality' parameter.
-TARGET_QUALITY_OVERRIDES = {
-    'cf02': 75.0,
-    'cf03': 20.0,
-}
 
 class SphericalRANServer(Node):
 
     def __init__(self):
         super().__init__('spherical_RAN_server')
-        self.declare_parameter('drone_name', 'cf01') # declare
-        self.declare_parameter('ran_vis', True) # declare
+        self.declare_parameter('drone_name', 'cf01')
+        self.declare_parameter('ran_vis', True)
 
         self.declare_parameter('beta', 1.5)
         self.declare_parameter('v', 0.5)
         self.declare_parameter('sigma', 0.5)
         self.declare_parameter('kappa', 20.0)
-        self.declare_parameter('u', 4.5)
+        self.declare_parameter('u', 4.3)
         self.declare_parameter('rate', 1.0)
         self.declare_parameter('J', 5.0)
         self.declare_parameter('n_sub', 3)
         self.declare_parameter('all_drones', [''])
         self.declare_parameter('target_quality', 20.0)
+        self.declare_parameter('target_names', [''])
+        self.declare_parameter('target_qualities', [0.0])
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        self.drone_name = self.get_parameter('drone_name').value    #drone name parameter
+        self.drone_name = self.get_parameter('drone_name').value
         self.ran_vis = self.get_parameter('ran_vis').value
         self.beta = self.get_parameter('beta').value
         self.v = self.get_parameter('v').value
@@ -69,10 +65,12 @@ class SphericalRANServer(Node):
         self.J = self.get_parameter('J').value
         self.n_sub = self.get_parameter('n_sub').value
         self.target_quality = self.get_parameter('target_quality').value
+        target_names = self.get_parameter('target_names').value
+        target_qualities = self.get_parameter('target_qualities').value
+        self.target_quality_overrides = dict(zip(target_names, target_qualities))
 
         all_drones = self.get_parameter('all_drones').value
         self.other_drones = [d for d in all_drones if d != self.drone_name]
-        # self.other_drones =  ['cf02']
 
         self.nodes = self._generate_nodes(self.n_sub)
         self.num_nodes = len(self.nodes)
@@ -165,9 +163,10 @@ class SphericalRANServer(Node):
             other_pos = np.array([other_t.x, other_t.y, other_t.z])
             relative = other_pos - self_pos
             polar = self._cartesian_to_polar_3D(np.array([relative]))[0]
-            quality = TARGET_QUALITY_OVERRIDES.get(other, self.target_quality)
+            quality = self.target_quality_overrides.get(other, self.target_quality)
             targets.append([polar[MAG], polar[PHI], (polar[THETA]), quality])
         return targets
+
 
     def _display_ran_rviz(self, nodes, activations, heading_vec):
         stamp = rclpy.time.Time().to_msg()  # zero stamp -> tf2 uses latest available transform

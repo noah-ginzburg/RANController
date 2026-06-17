@@ -17,9 +17,6 @@ X_DIR = ROLL = 0
 Y_DIR = PITCH = 1
 Z_DIR = YAW = 2
 
-#Constant hovering speed    
-HOVER_SPEED_SIM = 0.23
-# HOVER_SPEED_SIM = 0.0
 
 
 class DroneController(Node):
@@ -31,11 +28,11 @@ class DroneController(Node):
 
     def __init__(self):
         super().__init__('drone_controller')
-        self.declare_parameter('drone_name', 'cf01') # declare
-        self.declare_parameter('use_sim_odom', True) # declare
+        self.declare_parameter('drone_name', 'cf01')
+        self.declare_parameter('hover_speed', 0.23)
 
-        self.drone_name = self.get_parameter('drone_name').value    #drone name parameter
-        self.use_sim_odom = self.get_parameter('use_sim_odom').value
+        self.drone_name = self.get_parameter('drone_name').value
+        self.hover_speed = self.get_parameter('hover_speed').value
 
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
@@ -139,8 +136,7 @@ class DroneController(Node):
         # else:
             # self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
         
-        if self.use_sim_odom: self._update_sim(dt)
-        else: self._update_real(dt)
+        self._update_pos(dt)
 
         if not self.tf_ready:
             self.get_logger().warn("No tf ready, exiting update loop")
@@ -158,7 +154,7 @@ class DroneController(Node):
     def set_speeds(self, lin_speeds, ang_speeds=None):
         self.movement_msg.twist.linear.x = lin_speeds[X_DIR]
         self.movement_msg.twist.linear.y = lin_speeds[Y_DIR]
-        self.movement_msg.twist.linear.z = lin_speeds[Z_DIR] + HOVER_SPEED_SIM
+        self.movement_msg.twist.linear.z = lin_speeds[Z_DIR] + self.hover_speed
 
         if not ang_speeds == None:
             self.movement_msg.twist.angular.x = ang_speeds[ROLL]
@@ -169,7 +165,7 @@ class DroneController(Node):
     #Macro, because python has no preprocessor :(
     def hover(self): self.set_speeds(np.array([0.0, 0.0, 0.0]))
 
-    def _update_sim(self, dt):
+    def _update_pos(self, dt):
         if not self.tf_buffer.can_transform('mocap', self.drone_name, rclpy.time.Time()): 
             return
         try:
@@ -188,8 +184,6 @@ class DroneController(Node):
         self.tf_ready = True
         self.prev_trans = trans
 
-    def _update_real(self):
-        
 
 
 def main(args=None):
