@@ -3,7 +3,6 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch.conditions import IfCondition
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
 
@@ -50,7 +49,6 @@ def generate_launch_description():
     target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0')
 
     pkg_crazyswarm2 = get_package_share_directory('crazyflie')
-    pkg_vicon_bridge = get_package_share_directory('vicon_bridge')
 
     crazyswarm2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -68,13 +66,6 @@ def generate_launch_description():
         }.items()
     )
 
-    vicon_bridge = Node(
-        package='vicon_bridge',
-        executable='vicon_bridge.py',
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('real')),
-    )
-
     crazyflie_controllers = OpaqueFunction(function=launch_controllers)
 
     return LaunchDescription([
@@ -87,5 +78,4 @@ def generate_launch_description():
         target_qualities_arg, 
         crazyswarm2,
         TimerAction(period=3.0, actions=[crazyflie_controllers]),
-        vicon_bridge
     ])

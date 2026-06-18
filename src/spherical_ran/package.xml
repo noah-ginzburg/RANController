@@ -17,7 +17,7 @@
   <depend>python3-numpy</depend>
   <exec_depend>visualization_msgs</exec_depend>
   <depend>tf2_ros</depend>
-  <depend>vicon_bridge</depend>
+  <depend>vicon_interfaces</depend>
 
   <export>
     <build_type>ament_python</build_type>

@@ -22,7 +22,7 @@ Z_DIR = YAW = 2
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
     GROUP_MASK = 0  #0 = all drones
-    HEIGHT = 3.0   #Desired launch height
+    HEIGHT = 0.5   #Desired launch height
     DURATION = Duration(sec=3, nanosec=0)   #Time to reach the desired height
 
 
