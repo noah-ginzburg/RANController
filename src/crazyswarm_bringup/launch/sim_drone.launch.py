@@ -25,7 +25,7 @@ def launch_controllers(context, *args, **kwargs):
             executable='controller_server',
             name=f'controller_server_{name}',
             output='screen',
-            parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}],
+            parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real}],
         ))
         if name in ran_drones:
             actions.append(Node(

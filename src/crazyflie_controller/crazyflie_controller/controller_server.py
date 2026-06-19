@@ -1,7 +1,7 @@
 import sys
 import time
-from crazyflie_interfaces.srv import Takeoff, Land, GoTo
-from crazyflie_interfaces.msg import FullState
+from crazyflie_interfaces.srv import Takeoff, Land, GoTo, Arm
+from crazyflie_interfaces.msg import FullState, VelocityWorld
 import rclpy
 from rclpy.node import Node
 import numpy as np
@@ -30,12 +30,15 @@ class DroneController(Node):
         super().__init__('drone_controller')
         self.declare_parameter('drone_name', 'cf01')
         self.declare_parameter('hover_speed', 0.23)
+        self.declare_parameter('real', True)
 
         self.drone_name = self.get_parameter('drone_name').value
         self.hover_speed = self.get_parameter('hover_speed').value
+        self.real = self.get_parameter('real').value
 
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
+        self.arm_cli = self.create_client(Arm, f'{self.drone_name}/arm')
 
 
         while not self.cli.wait_for_service(timeout_sec=1.0):
@@ -61,7 +64,11 @@ class DroneController(Node):
         self.movement_msg.acc.x = 0.0
         self.movement_msg.acc.y = 0.0
         self.movement_msg.acc.z = 0.0
-        self.movement_pub = self.create_publisher(FullState, f'{self.drone_name}/cmd_full_state', 10)
+
+        if self.real:
+            self.movement_pub = self.create_publisher(VelocityWorld, f'{self.drone_name}/cmd_velocity_world', 10)
+        else:
+            self.movement_pub = self.create_publisher(FullState, f'{self.drone_name}/cmd_full_state', 10)
 
         self.should_hover = False
         self.should_land = False
@@ -74,6 +81,14 @@ class DroneController(Node):
         self.last_teleop_msg_time = self.get_clock().now()
         self.teleop_timeout = RCLDuration(seconds=0.5)
 
+
+    def send_arm_req(self, arm: bool):
+        req = Arm.Request()
+        req.arm = arm
+
+        self.future = self.arm_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, self.future)
+        return self.future.result()
 
     def send_takeoff_req(self, group_mask, height, duration):
         req = Takeoff.Request()
@@ -131,10 +146,10 @@ class DroneController(Node):
 
         if time_from_teleop > self.teleop_timeout or self.should_hover:
             self.hover()
-            # self.get_logger().warn(f'drone {self.drone_name} hovering.')
+            self.get_logger().warn(f'drone {self.drone_name} hovering.')
 
-        # else:
-            # self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
+        else:
+            self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
         
         self._update_pos(dt)
 
@@ -146,7 +161,17 @@ class DroneController(Node):
 
         self.movement_msg.header.stamp = self.get_clock().now().to_msg()
         self.movement_msg.header.frame_id = self.drone_name
-        self.movement_pub.publish(self.movement_msg)
+
+        if self.real:
+            velocity_msg = VelocityWorld()
+            velocity_msg.header = self.movement_msg.header
+            velocity_msg.vel.x = self.movement_msg.twist.linear.x
+            velocity_msg.vel.y = self.movement_msg.twist.linear.y
+            velocity_msg.vel.z = self.movement_msg.twist.linear.z
+            velocity_msg.yaw_rate = self.movement_msg.twist.angular.z
+            self.movement_pub.publish(velocity_msg)
+        else:
+            self.movement_pub.publish(self.movement_msg)
 
         self.prev_time = now    
         self.prev_pos = self.pos
@@ -190,7 +215,12 @@ def main(args=None):
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)    
     drone_controller = DroneController()
 
-    #
+    arm_response = drone_controller.send_arm_req(True)
+    if arm_response is not None:
+        drone_controller.get_logger().info('Arm command executed successfully')
+    else:
+        drone_controller.get_logger().error('Arm service call failed')
+
     response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=drone_controller.HEIGHT, duration=drone_controller.DURATION)
     if response is not None:
         drone_controller.get_logger().info('Takeoff command executed successfully')

@@ -32,7 +32,7 @@ def launch_controllers(context, *args, **kwargs):
             executable='controller_server',
             name=f'controller_server_{name}',
             output='screen',
-            parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}],
+            parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real}],
         ))
         # if name in ran_drones:
         #     actions.append(Node(
@@ -65,7 +65,7 @@ def generate_launch_description():
         launch_arguments={
             'backend': 'cflib',
             'mocap': 'False',
-            'rviz': 'True',
+            'rviz': 'False',
             'gui': 'False',
             'rviz_config_file': os.path.join(
                 get_package_share_directory('crazyswarm_bringup'),
