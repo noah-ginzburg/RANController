@@ -1,6 +1,6 @@
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction, SetLaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
@@ -48,11 +48,11 @@ def launch_controllers(context, *args, **kwargs):
 
 def generate_launch_description():
     real_arg = DeclareLaunchArgument('real', default_value='true')
-    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.21')
-    hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.1')
+    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.0')
+    hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.0')
     # drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf01,cf02,cf03')
-    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf01')
-    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf01')
+    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf09')
+    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='')
     target_names_arg = DeclareLaunchArgument('target_names', default_value='cf02,cf03')
     target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0')
 
@@ -67,6 +67,10 @@ def generate_launch_description():
             'mocap': 'False',
             'rviz': 'False',
             'gui': 'False',
+            # Don't start crazyswarm2's gamepad teleop (joy_node + teleop node). We
+            # drive via teleop_twist_keyboard -> /cmd_vel -> our controller instead,
+            # and an extra commander on the drone is a safety/conflict hazard.
+            'teleop': 'False',
             'rviz_config_file': os.path.join(
                 get_package_share_directory('crazyswarm_bringup'),
                 'rviz',
@@ -77,6 +81,15 @@ def generate_launch_description():
     crazyflie_controllers = OpaqueFunction(function=launch_controllers)
 
     return LaunchDescription([
+        # On Ctrl+C, launch sends SIGINT, then SIGTERM after sigterm_timeout, then an
+        # uncatchable SIGKILL sigkill_timeout later. The crazyflie_server ignores
+        # SIGINT, so with the 5s/10s defaults it lingers ~10s and gets relaunched as a
+        # duplicate. sigterm_timeout is kept ABOVE the controller's ~3s landing
+        # (DURATION) so a hardware land isn't cut short; sigkill then guarantees death
+        # ~6s after Ctrl+C. (NOTE: in Humble launch a *second* Ctrl+C is ignored —
+        # escalation is timer-based, not triggered by the second press.)
+        SetLaunchConfiguration('sigterm_timeout', '4'),
+        SetLaunchConfiguration('sigkill_timeout', '2'),
         real_arg,
         hover_speed_sim_arg,
         hover_speed_real_arg,
@@ -85,5 +98,5 @@ def generate_launch_description():
         target_names_arg,
         target_qualities_arg, 
         crazyswarm2,
-        TimerAction(period=3.0, actions=[crazyflie_controllers]),
+        TimerAction(period=4.0, actions=[crazyflie_controllers]),
     ])

@@ -2,6 +2,7 @@ import sys
 import time
 from crazyflie_interfaces.srv import Takeoff, Land, GoTo, Arm
 from crazyflie_interfaces.msg import FullState, VelocityWorld
+from std_srvs.srv import Empty
 import rclpy
 from rclpy.node import Node
 import numpy as np
@@ -21,15 +22,15 @@ Z_DIR = YAW = 2
 
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
-    GROUP_MASK = 0  #0 = all drones
-    HEIGHT = 0.5   #Desired launch height
-    DURATION = Duration(sec=3, nanosec=0)   #Time to reach the desired height
+    GROUP_MASK = 0  #0 = all drones 
+    HEIGHT = 1.0  #Desired launch height
+    DURATION = Duration(sec=10, nanosec=0)   #Time to reach the desired height
 
 
     def __init__(self):
         super().__init__('drone_controller')
         self.declare_parameter('drone_name', 'cf01')
-        self.declare_parameter('hover_speed', 0.23)
+        self.declare_parameter('hover_speed', 0.0)
         self.declare_parameter('real', True)
 
         self.drone_name = self.get_parameter('drone_name').value
@@ -39,10 +40,12 @@ class DroneController(Node):
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
         self.arm_cli = self.create_client(Arm, f'{self.drone_name}/arm')
+        self.emergency_cli = self.create_client(Empty, f'{self.drone_name}/emergency')
 
 
         while not self.cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
+            self.get_logger().info(f'{self.drone_name}/takeoff service not available, waiting again...')
+
         self.cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         self.des_heading_sub = self.create_subscription(Vector3, f'{self.drone_name}/desired_heading', self.des_heading_callback, 10)
 
@@ -83,11 +86,20 @@ class DroneController(Node):
 
 
     def send_arm_req(self, arm: bool):
+        # Only the cflib/cpp (real) backends provide an arm service; the sim backend
+        # does not. Without this guard the call_async future never completes and the
+        # node hangs forever before takeoff. Bail if no server is present, and bound
+        # the spin so a silent server can't wedge us either.
+        if not self.arm_cli.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn(
+                f'{self.drone_name}/arm service unavailable; skipping arm (expected in sim).')
+            return None
+
         req = Arm.Request()
         req.arm = arm
 
         self.future = self.arm_cli.call_async(req)
-        rclpy.spin_until_future_complete(self, self.future)
+        rclpy.spin_until_future_complete(self, self.future, timeout_sec=5.0)
         return self.future.result()
 
     def send_takeoff_req(self, group_mask, height, duration):
@@ -109,6 +121,13 @@ class DroneController(Node):
         self.future = self.land_cli.call_async(req)
         rclpy.spin_until_future_complete(self, self.future)
         return self.future.result()
+
+    def send_emergency_req(self):
+        # Cuts the motors immediately. Bounded spin so a wedged executor can't
+        # block the panic stop, but we still pump the link once to transmit it.
+        future = self.emergency_cli.call_async(Empty.Request())
+        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        return future.result()
 
     def cmd_vel_callback(self, msg: Twist):
         self.should_hover = False
@@ -146,7 +165,7 @@ class DroneController(Node):
 
         if time_from_teleop > self.teleop_timeout or self.should_hover:
             self.hover()
-            self.get_logger().warn(f'drone {self.drone_name} hovering.')
+            # self.get_logger().warn(f'drone {self.drone_name} hovering.')
 
         else:
             self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
@@ -213,15 +232,22 @@ class DroneController(Node):
 
 def main(args=None):
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)    
+    # rclpy.init(args=args)    
     drone_controller = DroneController()
 
-    arm_response = drone_controller.send_arm_req(True)
-    if arm_response is not None:
-        drone_controller.get_logger().info('Arm command executed successfully')
-    else:
-        drone_controller.get_logger().error('Arm service call failed')
+    if drone_controller.real:
+        arm_response = drone_controller.send_arm_req(True)
+
+        if arm_response is not None:
+            drone_controller.get_logger().info('Arm command executed successfully')
+        else:
+            # None means no arm server responded — normal in sim, already warned above.
+            drone_controller.get_logger().info('Arm skipped (no arm service); continuing to takeoff.')
 
     response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=drone_controller.HEIGHT, duration=drone_controller.DURATION)
+    # response = None
+
+    drone_controller.get_logger().info("got to takeoff")
     if response is not None:
         drone_controller.get_logger().info('Takeoff command executed successfully')
     else:
@@ -229,22 +255,32 @@ def main(args=None):
 
     time.sleep(drone_controller.DURATION.sec)
     
+    drone_controller.get_logger().info("trying to spin")
+
     try:
         rclpy.spin(drone_controller)
     except KeyboardInterrupt:
+        # First Ctrl+C: land gracefully (NO emergency stop here — that cuts motors
+        # and drops the drone). Emergency is reserved for a second Ctrl+C below.
         drone_controller.get_logger().info(f'User hit Ctrl+C. Attempting to land drone {drone_controller.drone_name}.')
         drone_controller.should_land = True
-        try:    
-            # land_height = -drone_controller.HEIGHT - drone_controller.pos[Z_DIR]
+        try:
+            # Land height is the descent distance to travel: negative current
+            # altitude so the drone is commanded down to the floor. NOTE: pos[Z]
+            # comes from the cf01 TF and can go NaN/stale on tracking loss.
             land_height = -drone_controller.pos[Z_DIR]
             land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=land_height, duration=drone_controller.DURATION)
-            # drone_controller.get_logger().fatal(f'land_height: {land_height}')
-            drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land.')
+            drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land (height={land_height}).')
             if land_resp is not None: time.sleep(drone_controller.DURATION.sec)
         except KeyboardInterrupt:
-            drone_controller.get_logger().warn(f'User hit Ctrl+C again. Attempting rclpy shutdown.')
+            drone_controller.get_logger().fatal(
+                f'User hit Ctrl+C again. EMERGENCY STOP — cutting motors on {drone_controller.drone_name}.')
+            try:
+                drone_controller.send_emergency_req()
+            except Exception as e:
+                drone_controller.get_logger().error(f'Emergency stop call failed: {e}')
             pass
-        pass    
+        pass
 
     drone_controller.destroy_node()
     rclpy.shutdown()

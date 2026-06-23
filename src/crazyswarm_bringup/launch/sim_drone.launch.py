@@ -1,6 +1,6 @@
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction, SetLaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
@@ -27,14 +27,14 @@ def launch_controllers(context, *args, **kwargs):
             output='screen',
             parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real}],
         ))
-        if name in ran_drones:
-            actions.append(Node(
-                package='spherical_ran',
-                executable='spherical_RAN_server',
-                name=f'spherical_RAN_server_{name}',
-                output='screen',
-                parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
-            ))
+        # if name in ran_drones:
+        #     actions.append(Node(
+        #         package='spherical_ran',
+        #         executable='spherical_RAN_server',
+        #         name=f'spherical_RAN_server_{name}',
+        #         output='screen',
+        #         parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
+        #     ))
 
     return actions
 
@@ -43,8 +43,11 @@ def generate_launch_description():
     real_arg = DeclareLaunchArgument('real', default_value='false')
     hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.23')
     hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.0')
-    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf01,cf02,cf03')
-    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf01')
+    # Must match the drones marked `enabled: true` in crazyflies.yaml — the sim
+    # server only creates takeoff/land/arm services for enabled drones, and a
+    # controller for a missing drone blocks forever in wait_for_service.
+    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf01')
+    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='')
     target_names_arg = DeclareLaunchArgument('target_names', default_value='cf02,cf03')
     target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0')
 
@@ -69,6 +72,13 @@ def generate_launch_description():
     crazyflie_controllers = OpaqueFunction(function=launch_controllers)
 
     return LaunchDescription([
+        # On Ctrl+C, launch sends SIGINT, then SIGTERM after sigterm_timeout, then
+        # an uncatchable SIGKILL sigkill_timeout later. The crazyflie_server ignores
+        # SIGINT, so with the 5s/10s defaults it lingers ~10s and gets relaunched as
+        # a duplicate. Shrink the window so a single Ctrl+C reliably kills it. (NOTE:
+        # in Humble launch, a *second* Ctrl+C is ignored — escalation is timer-based.)
+        SetLaunchConfiguration('sigterm_timeout', '2'),
+        SetLaunchConfiguration('sigkill_timeout', '2'),
         real_arg,
         hover_speed_sim_arg,
         hover_speed_real_arg,
