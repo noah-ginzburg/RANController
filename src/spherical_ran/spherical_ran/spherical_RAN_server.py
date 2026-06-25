@@ -10,6 +10,7 @@ from std_msgs.msg import ColorRGBA
 import pyvista as pv
 import tf2_ros
 from rclpy.duration import Duration as RCLDuration
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -97,7 +98,11 @@ class SphericalRANServer(Node):
         self.drone_world_pos = np.zeros(3)
 
         self.heading_pub = self.create_publisher(Vector3, f'{self.drone_name}/desired_heading', 10)
-        self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz', 10)
+        vis_qos = QoSProfile(depth=1,
+                             reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                             history=QoSHistoryPolicy.KEEP_LAST)
+        self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz')
+        self._vis_count = 0
         self.timer = self.create_timer((1.0/RAN_UPDATE_RATE), self.update)
         self.heading_msg = Vector3()
         self.heading_msg.x = 0.0
@@ -111,6 +116,14 @@ class SphericalRANServer(Node):
         self.dt = 0.4
 
         self.targets = self._get_targets_from_tf()
+        # self.targets = [(1.0, 0.0, np.pi/2, 20.0)]
+
+        try:
+            self_trans = self.tf_buffer.lookup_transform('mocap', self.drone_name, rclpy.time.Time())
+            t = self_trans.transform.translation
+            self.drone_world_pos = np.array([t.x, t.y, t.z])
+        except tf2_ros.TransformException:
+            pass
 
         b = self._generate_sensory_input(self.nodes, self.targets, self.kappa)
         if self.targets:
@@ -120,9 +133,11 @@ class SphericalRANServer(Node):
             #     f'b_peak phi={peak[PHI]:.3f} theta={peak[THETA]:.3f} (b={np.max(b):.3f})'
             # )
         noise = self._rand_link_func(self.z, self.sigma * np.sqrt(self.dt), 1.0/np.sqrt(self.num_nodes))
+
         self.z = (self.z
             + self.dt * self.rate * (-(self.z) + np.tanh(self.u * (self.M @ self.z) + b - self.beta) - np.tanh(-self.beta))
             + np.sqrt(self.rate) * noise)
+
         if self.targets:
             zpeak = self.nodes[np.argmax(self.z)]
             # self.get_logger().info(
@@ -134,12 +149,26 @@ class SphericalRANServer(Node):
         norm = np.linalg.norm(vec)
         if norm > 0:
             vec = vec / norm
+
+        for targ in self.other_drones:
+            try:
+                relative_pos = self.tf_buffer.lookup_transform(f'{self.drone_name}', targ, rclpy.time.Time())
+            except tf2_ros.TransformException:
+                continue
+
+            v = relative_pos.transform.translation
+            dist = np.sqrt(v.x**2 + v.y**2 + v.z**2)
+            if dist < 0.3: 
+                vec = np.array([-vec[X], -vec[Y], vec[Z]])
+
+
         self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
         self.heading_pub.publish(self.heading_msg)
-        # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
+        self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
 
-        if self.ran_vis:
-            self._display_ran_rviz(self.nodes, self.z, vec)
+       
+        self._display_ran_rviz(self.nodes, self.z, vec)
+ 
 
         self.prev_time = now
 

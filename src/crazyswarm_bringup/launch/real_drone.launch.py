@@ -34,14 +34,14 @@ def launch_controllers(context, *args, **kwargs):
             output='screen',
             parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real}],
         ))
-        # if name in ran_drones:
-        #     actions.append(Node(
-        #         package='spherical_ran',
-        #         executable='spherical_RAN_server',
-        #         name=f'spherical_RAN_server_{name}',
-        #         output='screen',
-        #         parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
-        #     ))
+        if name in ran_drones:
+            actions.append(Node(
+                package='spherical_ran',
+                executable='spherical_RAN_server',
+                name=f'spherical_RAN_server_{name}',
+                output='screen',
+                parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
+            ))
 
     return actions
 
@@ -52,7 +52,7 @@ def generate_launch_description():
     hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.0')
     # drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf01,cf02,cf03')
     drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf09')
-    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='')
+    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf09')
     target_names_arg = DeclareLaunchArgument('target_names', default_value='cf02,cf03')
     target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0')
 

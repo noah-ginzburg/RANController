@@ -27,14 +27,14 @@ def launch_controllers(context, *args, **kwargs):
             output='screen',
             parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real}],
         ))
-        # if name in ran_drones:
-        #     actions.append(Node(
-        #         package='spherical_ran',
-        #         executable='spherical_RAN_server',
-        #         name=f'spherical_RAN_server_{name}',
-        #         output='screen',
-        #         parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
-        #     ))
+        if name in ran_drones:
+            actions.append(Node(
+                package='spherical_ran',
+                executable='spherical_RAN_server',
+                name=f'spherical_RAN_server_{name}',
+                output='screen',
+                parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
+            ))
 
     return actions
 
@@ -46,8 +46,8 @@ def generate_launch_description():
     # Must match the drones marked `enabled: true` in crazyflies.yaml — the sim
     # server only creates takeoff/land/arm services for enabled drones, and a
     # controller for a missing drone blocks forever in wait_for_service.
-    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf01')
-    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='')
+    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf01,cf02,cf03')
+    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf01')
     target_names_arg = DeclareLaunchArgument('target_names', default_value='cf02,cf03')
     target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0')
 
