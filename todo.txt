@@ -1,0 +1,7 @@
+1. 3 target testing in sim
+2. hardware transfer
+3. graph of one node vs all other nodes
+4. complex lin alg math? ask marco
+5. weird squares on kernel matrix - because of co-lateral points. multiple points at theta i,j because theta differes. one point could be at phi i,j, theta 1, and same on theta 2
+6. reasoning for sphere - look at paper
+ 
