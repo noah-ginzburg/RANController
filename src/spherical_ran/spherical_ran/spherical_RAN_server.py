@@ -101,7 +101,7 @@ class SphericalRANServer(Node):
         vis_qos = QoSProfile(depth=1,
                              reliability=QoSReliabilityPolicy.BEST_EFFORT,
                              history=QoSHistoryPolicy.KEEP_LAST)
-        self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz')
+        self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz', vis_qos)
         self._vis_count = 0
         self.timer = self.create_timer((1.0/RAN_UPDATE_RATE), self.update)
         self.heading_msg = Vector3()
@@ -163,7 +163,7 @@ class SphericalRANServer(Node):
 
 
         self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
-        self.heading_pub.publish(self.heading_msg)
+        # self.heading_pub.publish(self.heading_msg)
         self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
 
        
