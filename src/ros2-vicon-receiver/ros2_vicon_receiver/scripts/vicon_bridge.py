@@ -9,7 +9,7 @@ from motion_capture_tracking_interfaces.msg import NamedPoseArray, NamedPose
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from rclpy.duration import Duration
 
-MARKER_HEIGHT_OFFSET = 35.083595275878906
+MARKER_HEIGHT_OFFSET = 0.0
 
 class ViconBridge(Node):
     def __init__(self):
@@ -20,6 +20,10 @@ class ViconBridge(Node):
         topics = self.get_topic_names_and_types()
         existing = {topic for topic, _ in topics}
         self.subscribers = {}
+        # First valid Vicon position per subject, subtracted from every later
+        # frame so each drone's session starts at (0,0,0). Orientation is left
+        # untouched -- only the translation origin is shifted.
+        self.origin_offset = {}
 
 
         for name in self.all_drones:
@@ -48,19 +52,32 @@ class ViconBridge(Node):
         # gap is fine -- the onboard Kalman filter coasts on gyro/accel.
         quat = (msg.x_rot, msg.y_rot, msg.z_rot, msg.w)
         if any(math.isnan(v) for v in quat):
+            self.get_logger().warn("nan observed in quaternion")
             return
         if abs(math.sqrt(sum(v * v for v in quat)) - 1.0) > 0.1:  # not a unit quaternion
+            self.get_logger().warn("not a unit quaternion")
             return
         if msg.x_trans == 0.0 and msg.y_trans == 0.0 and msg.z_trans == 0.0:
+            self.get_logger().warn("invalid 0,0,0 frame")
             return
+
+        if msg.subject_name not in self.origin_offset:
+            self.origin_offset[msg.subject_name] = (msg.x_trans, msg.y_trans, msg.z_trans)
+            self.get_logger().info(
+                f'{msg.subject_name} origin set to '
+                f'({msg.x_trans / 1000.0:.3f}, {msg.y_trans / 1000.0:.3f}, {msg.z_trans / 1000.0:.3f}) m')
+        ox, oy, oz = self.origin_offset[msg.subject_name]
+        x_m = (msg.x_trans - ox) / 1000.0
+        y_m = (msg.y_trans - oy) / 1000.0
+        z_m = (msg.z_trans - oz - MARKER_HEIGHT_OFFSET) / 1000.0
 
         transform = TransformStamped()
         transform.header.stamp = self.get_clock().now().to_msg()
         transform.header.frame_id = 'mocap'
         transform.child_frame_id = msg.subject_name
-        transform.transform.translation.x = msg.x_trans / 1000.0
-        transform.transform.translation.y = msg.y_trans / 1000.0
-        transform.transform.translation.z = (msg.z_trans - MARKER_HEIGHT_OFFSET) / 1000.0
+        transform.transform.translation.x = x_m
+        transform.transform.translation.y = y_m
+        transform.transform.translation.z = z_m
 
         transform.transform.rotation.x = msg.x_rot
         transform.transform.rotation.y = msg.y_rot
@@ -70,16 +87,13 @@ class ViconBridge(Node):
 
         named_pose = NamedPose()
         named_pose.name = msg.subject_name
-        named_pose.pose.position.x = msg.x_trans / 1000.0
-        named_pose.pose.position.y = msg.y_trans / 1000.0
-        named_pose.pose.position.z = (msg.z_trans - MARKER_HEIGHT_OFFSET) / 1000.0
-        # NaN orientation -> crazyflie_server sends position-only (extPos) instead
-        # of full pose (extPose), so a misaligned Vicon rigid-body yaw can't corrupt
-        # the firmware heading estimate. Firmware estimates yaw from the gyro.
-        named_pose.pose.orientation.x = float('nan')
-        named_pose.pose.orientation.y = float('nan')
-        named_pose.pose.orientation.z = float('nan')
-        named_pose.pose.orientation.w = float('nan')
+        named_pose.pose.position.x = x_m
+        named_pose.pose.position.y = y_m
+        named_pose.pose.position.z = z_m
+        named_pose.pose.orientation.x = msg.x_rot
+        named_pose.pose.orientation.y = msg.y_rot
+        named_pose.pose.orientation.z = msg.z_rot
+        named_pose.pose.orientation.w = msg.w
 
         self.poses_pub.publish(NamedPoseArray(poses=[named_pose]))
 

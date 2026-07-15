@@ -164,7 +164,7 @@ class SphericalRANServer(Node):
 
         self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
         # self.heading_pub.publish(self.heading_msg)
-        self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
+        # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
 
        
         self._display_ran_rviz(self.nodes, self.z, vec)
