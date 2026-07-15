@@ -20,10 +20,11 @@ class ViconBridge(Node):
         topics = self.get_topic_names_and_types()
         existing = {topic for topic, _ in topics}
         self.subscribers = {}
-        # First valid Vicon position per subject, subtracted from every later
-        # frame so each drone's session starts at (0,0,0). Orientation is left
-        # untouched -- only the translation origin is shifted.
-        self.origin_offset = {}
+        # Last raw pose per subject, used to drop frozen frames. When Tracker
+        # loses the object it re-serves the last pose bit-identically (the
+        # receiver never checks the SDK's Occluded flag); real tracking always
+        # has sub-mm noise between frames, so exact repeats mean stale data.
+        self.last_raw = {}
 
 
         for name in self.all_drones:
@@ -61,15 +62,18 @@ class ViconBridge(Node):
             self.get_logger().warn("invalid 0,0,0 frame")
             return
 
-        if msg.subject_name not in self.origin_offset:
-            self.origin_offset[msg.subject_name] = (msg.x_trans, msg.y_trans, msg.z_trans)
-            self.get_logger().info(
-                f'{msg.subject_name} origin set to '
-                f'({msg.x_trans / 1000.0:.3f}, {msg.y_trans / 1000.0:.3f}, {msg.z_trans / 1000.0:.3f}) m')
-        ox, oy, oz = self.origin_offset[msg.subject_name]
-        x_m = (msg.x_trans - ox) / 1000.0
-        y_m = (msg.y_trans - oy) / 1000.0
-        z_m = (msg.z_trans - oz - MARKER_HEIGHT_OFFSET) / 1000.0
+        raw = (msg.x_trans, msg.y_trans, msg.z_trans,
+               msg.x_rot, msg.y_rot, msg.z_rot, msg.w)
+        if self.last_raw.get(msg.subject_name) == raw:
+            self.get_logger().warn(
+                f'{msg.subject_name}: frozen Vicon frame (tracking lost?), dropping',
+                throttle_duration_sec=1.0)
+            return
+        self.last_raw[msg.subject_name] = raw
+
+        x_m = msg.x_trans / 1000.0
+        y_m = msg.y_trans / 1000.0
+        z_m = (msg.z_trans - MARKER_HEIGHT_OFFSET) / 1000.0
 
         transform = TransformStamped()
         transform.header.stamp = self.get_clock().now().to_msg()

@@ -1,6 +1,8 @@
 import os
+from datetime import datetime
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction, SetLaunchConfiguration
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, TimerAction, SetLaunchConfiguration
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
@@ -19,6 +21,17 @@ def launch_controllers(context, *args, **kwargs):
     hover_speed = LaunchConfiguration('hover_speed_real').perform(context) if real else LaunchConfiguration('hover_speed_sim').perform(context)
 
     actions = []
+    if LaunchConfiguration('record').perform(context) == 'true':
+        # Humble's rosbag2 doesn't allow mixing explicit topic names with
+        # --regex, so everything goes into one pattern.
+        topic_regex = '(' + '|'.join([f'/{n}/.*' for n in drone_names] + ['/poses']) + ')$'
+        bag_dir = os.path.expanduser('~/biodrone/bags')
+        os.makedirs(bag_dir, exist_ok=True)
+        actions.append(ExecuteProcess(
+            cmd=['ros2', 'bag', 'record', '-e', topic_regex, '-o',
+                 os.path.join(bag_dir, datetime.now().strftime('flight_%Y%m%d_%H%M%S'))],
+            output='screen',
+        ))
     if real:
         actions.append(Node(
             package='ros2_vicon_receiver',
@@ -26,22 +39,22 @@ def launch_controllers(context, *args, **kwargs):
             output='screen',
             parameters=[{'all_drones': drone_names}],
         ))
-    for name in drone_names:
-        actions.append(Node(
-            package='crazyflie_controller',
-            executable='controller_server',
-            name=f'controller_server_{name}',
-            output='screen',
-            parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real}],
-        ))
-        if name in ran_drones:
-            actions.append(Node(
-                package='spherical_ran',
-                executable='spherical_RAN_server',
-                name=f'spherical_RAN_server_{name}',
-                output='screen',
-                parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
-            ))
+    # for name in drone_names:
+    #     actions.append(Node(
+    #         package='crazyflie_controller',
+    #         executable='controller_server',
+    #         name=f'controller_server_{name}',
+    #         output='screen',
+    #         parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real}],
+    #     ))
+    #     if name in ran_drones:
+    #         actions.append(Node(
+    #             package='spherical_ran',
+    #             executable='spherical_RAN_server',
+    #             name=f'spherical_RAN_server_{name}',
+    #             output='screen',
+    #             parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
+    #         ))
 
     return actions
 
@@ -55,6 +68,7 @@ def generate_launch_description():
     ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf09')
     target_names_arg = DeclareLaunchArgument('target_names', default_value='cf02,cf03')
     target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0')
+    record_arg = DeclareLaunchArgument('record', default_value='true')
 
     pkg_crazyswarm2 = get_package_share_directory('crazyflie')
 
@@ -96,7 +110,8 @@ def generate_launch_description():
         drone_names_arg,
         ran_drones_arg,
         target_names_arg,
-        target_qualities_arg, 
+        target_qualities_arg,
+        record_arg,
         crazyswarm2,
-        TimerAction(period=4.0, actions=[crazyflie_controllers]),
+        TimerAction(period=3.0, actions=[crazyflie_controllers]),
     ])

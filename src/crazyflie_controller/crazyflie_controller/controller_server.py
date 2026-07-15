@@ -1,7 +1,7 @@
 import sys
 import time
 from crazyflie_interfaces.srv import Takeoff, Land, GoTo, Arm
-from crazyflie_interfaces.msg import FullState, VelocityWorld, Hover
+from crazyflie_interfaces.msg import FullState, VelocityWorld
 from std_srvs.srv import Empty
 import rclpy
 from rclpy.node import Node
@@ -25,10 +25,6 @@ class DroneController(Node):
     GROUP_MASK = 0  #0 = all drones
     HEIGHT = 5.0  #Desired launch height
     DURATION = Duration(sec=3, nanosec=0)   #Time to reach the desired height
-    MIN_HEIGHT = 0.0    #m, floor of the hover height setpoint
-    MAX_HEIGHT = 2.0    #m, ceiling of the hover height setpoint
-    Z_LEAD = 0.5        #s, lookahead when climbing: z_sp = mocap_z + vz*Z_LEAD
-    VZ_DEADBAND = 0.05  #m/s, below this the commanded vz counts as "hold height"
 
 
     def __init__(self):
@@ -73,15 +69,9 @@ class DroneController(Node):
         self.movement_msg.acc.z = 0.0
 
         if self.real:
-            # Hover setpoint: vx/vy are velocities, z_distance is an ABSOLUTE height
-            # the firmware position-holds. Commanded vz gets integrated into
-            # self.z_target so altitude stays closed-loop onboard (a weak motor is
-            # fought by the z position loop instead of drifting the altitude).
-            # NOTE: the sim backend's cmd_hover is a stub, so sim keeps cmd_full_state.
-            self.movement_pub = self.create_publisher(Hover, f'{self.drone_name}/cmd_hover', 10)
+            self.movement_pub = self.create_publisher(VelocityWorld, f'{self.drone_name}/cmd_velocity_world', 10)
         else:
             self.movement_pub = self.create_publisher(FullState, f'{self.drone_name}/cmd_full_state', 10)
-        self.z_hold = None  #m, mocap height latched while no vertical command
 
         self.should_hover = False
         self.should_land = False
@@ -174,8 +164,9 @@ class DroneController(Node):
         time_from_teleop = now - self.last_teleop_msg_time
 
         if time_from_teleop > self.teleop_timeout or self.should_hover:
-            self.hover()
+            # self.hover()
             # self.get_logger().warn(f'drone {self.drone_name} hovering.')
+            test=1
 
         else:
             # self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
@@ -193,30 +184,13 @@ class DroneController(Node):
         self.movement_msg.header.frame_id = self.drone_name
 
         if self.real:
-            # Height setpoint comes from mocap, not an integrator. While climbing
-            # the setpoint rides the measured height with a small lead, so the
-            # position error is bounded by construction (|vz|*Z_LEAD) and can't
-            # wind up into thrust saturation. While no vertical command, the
-            # height is LATCHED (not continuously re-read) -- a setpoint that
-            # follows the measurement has zero error and would let the drone sag.
-            vz = self.movement_msg.twist.linear.z
-            if abs(vz) > self.VZ_DEADBAND:
-                self.z_hold = None
-                z_sp = self.pos[Z_DIR] + vz * self.Z_LEAD
-            else:
-                if self.z_hold is None:
-                    self.z_hold = self.pos[Z_DIR]
-                z_sp = self.z_hold
-            hover_msg = Hover()
-            hover_msg.header = self.movement_msg.header
-            hover_msg.vx = self.movement_msg.twist.linear.x
-            hover_msg.vy = self.movement_msg.twist.linear.y
-            # Keep yaw locked. cmd_hover interprets yaw_rate as rad/s and negates
-            # it (unlike cmd_velocity_world), so passing teleop angular.z through
-            # commands a fast reversed spin.
-            hover_msg.yaw_rate = 0.0
-            hover_msg.z_distance = float(np.clip(z_sp, self.MIN_HEIGHT, self.MAX_HEIGHT))
-            self.movement_pub.publish(hover_msg)
+            velocity_msg = VelocityWorld()
+            velocity_msg.header = self.movement_msg.header
+            velocity_msg.vel.x = self.movement_msg.twist.linear.x
+            velocity_msg.vel.y = self.movement_msg.twist.linear.y
+            velocity_msg.vel.z = self.movement_msg.twist.linear.z
+            velocity_msg.yaw_rate = self.movement_msg.twist.angular.z
+            self.movement_pub.publish(velocity_msg)
         else:
             self.movement_pub.publish(self.movement_msg)
 
@@ -226,10 +200,7 @@ class DroneController(Node):
     def set_speeds(self, lin_speeds, ang_speeds=None):
         self.movement_msg.twist.linear.x = lin_speeds[X_DIR]
         self.movement_msg.twist.linear.y = lin_speeds[Y_DIR]
-        # hover_speed was an open-loop climb trim for the velocity-world mode. In
-        # real/hover mode the onboard z position loop replaces it -- leaving the
-        # bias in would integrate into z_target as a permanent climb command.
-        self.movement_msg.twist.linear.z = lin_speeds[Z_DIR] + (0.0 if self.real else self.hover_speed)
+        self.movement_msg.twist.linear.z = lin_speeds[Z_DIR] + self.hover_speed
 
         if not ang_speeds == None:
             self.movement_msg.twist.angular.x = ang_speeds[ROLL]
