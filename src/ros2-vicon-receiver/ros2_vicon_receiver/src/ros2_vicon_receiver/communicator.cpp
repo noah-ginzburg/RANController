@@ -41,7 +41,10 @@ bool Communicator::connect()
     vicon_client.EnableDeviceData();
     vicon_client.EnableDebugData();
 
-    vicon_client.SetStreamMode(StreamMode::ClientPull);
+    // ServerPush: the server streams every frame as produced (buffered client
+    // side, buffer_size deep) instead of one network round-trip per frame.
+    // ClientPull was losing frames to network jitter at 100 Hz.
+    vicon_client.SetStreamMode(StreamMode::ServerPush);
     vicon_client.SetBufferSize(buffer_size);
 
     msg = "Initialization complete";
@@ -72,10 +75,30 @@ bool Communicator::disconnect()
 
 void Communicator::get_frame()
 {
-    vicon_client.GetFrame();
+    if (vicon_client.GetFrame().Result != Result::Success)
+    {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "GetFrame() failed -- server not streaming or network stall");
+        return;
+    }
     Output_GetFrameNumber frame_number = vicon_client.GetFrameNumber();
 
+    // Vicon frame numbers are consecutive; a jump means frames were lost
+    // (network, server load, or this client falling behind).
+    if (last_frame_number != 0 && frame_number.FrameNumber > last_frame_number + 1)
+    {
+        RCLCPP_WARN(this->get_logger(), "dropped %u Vicon frames (%u -> %u)",
+            frame_number.FrameNumber - last_frame_number - 1,
+            last_frame_number, frame_number.FrameNumber);
+    }
+    last_frame_number = frame_number.FrameNumber;
+
     unsigned int subject_count = vicon_client.GetSubjectCount().SubjectCount;
+    if (subject_count == 0)
+    {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "frame %u contains no subjects (tracking lost?)", frame_number.FrameNumber);
+    }
 
     map<string, Publisher>::iterator pub_it;
 
@@ -98,7 +121,18 @@ void Communicator::get_frame()
                 vicon_client.GetSegmentGlobalTranslation(subject_name, segment_name);
             Output_GetSegmentGlobalRotationQuaternion rot =
                 vicon_client.GetSegmentGlobalRotationQuaternion(subject_name, segment_name);
-            
+
+            // The SDK re-serves the last pose with Occluded set when Tracker
+            // cannot fit the object. Publishing it would feed stale data
+            // downstream; skip it and say so instead.
+            if (trans.Occluded || rot.Occluded)
+            {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "%s/%s occluded in frame %u -- not publishing",
+                    subject_name.c_str(), segment_name.c_str(), frame_number.FrameNumber);
+                continue;
+            }
+
             for (size_t i = 0; i < 4; i++)
             {
                 if (i < 3)

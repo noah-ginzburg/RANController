@@ -8,6 +8,19 @@ from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
 
+# Per-drone launch (takeoff) heights in meters. cf01/cf02/cf03 sit on the
+# floor at the x,y of their icosphere triangle node (see crazyflies.yaml);
+# takeoff brings each one up to its node's z. The unit icosphere is centered
+# SPHERE_CENTER_Z above the floor, so height = SPHERE_CENTER_Z + node z.
+SPHERE_CENTER_Z = 1.0
+LAUNCH_HEIGHTS = {
+    'cf01': SPHERE_CENTER_Z - 0.500000,  # icosphere node 12
+    'cf02': SPHERE_CENTER_Z + 0.809017,  # icosphere node 21
+    'cf03': SPHERE_CENTER_Z - 0.309017,  # icosphere node 35
+}
+DEFAULT_LAUNCH_HEIGHT = 0.5  # any drone not listed above (e.g. cf09)
+
+
 def launch_controllers(context, *args, **kwargs):
     names_str = LaunchConfiguration('drone_names').perform(context)
     ran_str = LaunchConfiguration('ran_drones').perform(context)
@@ -37,7 +50,15 @@ def launch_controllers(context, *args, **kwargs):
             package='ros2_vicon_receiver',
             executable='vicon_bridge.py',
             output='screen',
-            parameters=[{'all_drones': drone_names}],
+            # send_orientation=True requires firmware with the fixed external-
+            # attitude update (2026.04+); on old firmware it destabilizes the EKF
+            # at yaw far from 0. Set False to fall back to position-only fusion.
+            # 2026-07-17: True — new airframe confirmed flashed with 2026.04.
+            # Position-only fusion was the root cause of the day's runaways:
+            # EKF yaw is gyro-only, drifts with every spin, and persists between
+            # takeoff attempts -> control frame rotates -> lateral runaway/tumble
+            # (bags 151857, 152128). Full pose fusion corrects yaw continuously.
+            parameters=[{'all_drones': drone_names}, {'send_orientation': True}],
         ))
     # for name in drone_names:
     #     actions.append(Node(
@@ -45,7 +66,8 @@ def launch_controllers(context, *args, **kwargs):
     #         executable='controller_server',
     #         name=f'controller_server_{name}',
     #         output='screen',
-    #         parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real}],
+    #         parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real},
+    #                     {'launch_height': float(LAUNCH_HEIGHTS.get(name, DEFAULT_LAUNCH_HEIGHT))}],
     #     ))
     #     if name in ran_drones:
     #         actions.append(Node(

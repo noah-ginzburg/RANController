@@ -23,7 +23,6 @@ Z_DIR = YAW = 2
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
     GROUP_MASK = 0  #0 = all drones
-    HEIGHT = 5.0  #Desired launch height
     DURATION = Duration(sec=3, nanosec=0)   #Time to reach the desired height
 
 
@@ -32,10 +31,15 @@ class DroneController(Node):
         self.declare_parameter('drone_name', 'cf01')
         self.declare_parameter('hover_speed', 0.0)
         self.declare_parameter('real', True)
+        # Desired launch height; set per drone from LAUNCH_HEIGHTS in
+        # real_drone.launch.py (icosphere target drones each fly to their
+        # node's z, others get the default).
+        self.declare_parameter('launch_height', 0.5)
 
         self.drone_name = self.get_parameter('drone_name').value
         self.hover_speed = self.get_parameter('hover_speed').value
         self.real = self.get_parameter('real').value
+        self.launch_height = self.get_parameter('launch_height').value
 
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
@@ -246,7 +250,7 @@ def main(args=None):
             # None means no arm server responded — normal in sim, already warned above.
             drone_controller.get_logger().info('Arm skipped (no arm service); continuing to takeoff.')
 
-    # response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=drone_controller.HEIGHT, duration=drone_controller.DURATION)
+    # response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=drone_controller.launch_height, duration=drone_controller.DURATION)
     response = None
 
     drone_controller.get_logger().info("got to takeoff")

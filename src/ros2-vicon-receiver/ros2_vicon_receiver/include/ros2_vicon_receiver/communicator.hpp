@@ -23,6 +23,7 @@ private:
     string ns_name;
     map<string, Publisher> pub_map;
     boost::mutex mutex;
+    unsigned int last_frame_number = 0;
 
 public:
     Communicator();

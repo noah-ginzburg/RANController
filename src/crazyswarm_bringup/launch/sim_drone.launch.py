@@ -46,10 +46,10 @@ def generate_launch_description():
     # Must match the drones marked `enabled: true` in crazyflies.yaml — the sim
     # server only creates takeoff/land/arm services for enabled drones, and a
     # controller for a missing drone blocks forever in wait_for_service.
-    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf01,cf02,cf03')
-    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf01')
-    target_names_arg = DeclareLaunchArgument('target_names', default_value='cf02,cf03')
-    target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0')
+    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf09,cf01,cf02,cf03')
+    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf09')
+    target_names_arg = DeclareLaunchArgument('target_names', default_value='cf01,cf02,cf03')
+    target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0,20.0')
 
     pkg_crazyswarm2 = get_package_share_directory('crazyflie')
 
