@@ -44,7 +44,7 @@ def geodesic_distance(point1, point2):
         -1, 1))
 
 
-def genetate_connection_matrix(sphere_points, J0, J, v_val):
+def genetate_connection_matrix(sphere_points, v_val):
     num_nodes = len(sphere_points)
     M = np.zeros((num_nodes, num_nodes))
     alphas = np.zeros((num_nodes, num_nodes))
@@ -52,7 +52,7 @@ def genetate_connection_matrix(sphere_points, J0, J, v_val):
     for i in range(num_nodes):
         for j in range(num_nodes):
             alphas[i, j] = geodesic_distance(sphere_points[i], sphere_points[j])
-            M[i, j] = J0 + J * np.cos(np.pi * np.power((alphas[i, j] / np.pi), v_val)) * (1 / num_nodes)
+            M[i, j] = np.cos(np.pi * np.power((alphas[i, j] / np.pi), v_val)) * (1 / num_nodes)
 
     return alphas, M
 
@@ -62,8 +62,6 @@ def main():
     # any of these, the cached M is no longer valid for the new configuration —
     # that's why they're saved alongside M below, so a loader can check them.
     n_sub = 3
-    J0 = 0
-    J = 5.0
     v = 0.5
 
     # Step 1: build the sphere's nodes (same icosphere setup as the notebook).
@@ -73,7 +71,7 @@ def main():
     # Step 2: the slow part — pairwise geodesic distances + connection strengths
     # for every node pair. This is the ~20s computation we're caching.
     print(f'Generating connection matrix for {len(nodes)} nodes (n_sub={n_sub})...')
-    alphas, M = genetate_connection_matrix(nodes, J0, J, v)
+    alphas, M = genetate_connection_matrix(nodes, v)
 
     # Step 3: save everything needed to reconstruct AND validate this kernel
     # later — np.savez bundles multiple named arrays into one .npz file.
@@ -82,7 +80,7 @@ def main():
     out_path = 'src/spherical_ran/spherical_ran/kernel_cache.npz'
     np.savez(out_path,
              nodes=nodes, alphas=alphas, M=M,
-             n_sub=n_sub, J0=J0, J=J, v=v)
+             n_sub=n_sub, v=v)
     print(f'Saved kernel cache to {out_path}')
 
 

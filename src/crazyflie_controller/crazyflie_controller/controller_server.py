@@ -23,7 +23,7 @@ Z_DIR = YAW = 2
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
     GROUP_MASK = 0  #0 = all drones
-    DURATION = Duration(sec=3, nanosec=0)   #Time to reach the desired height
+    DURATION = Duration(sec=1, nanosec=0)   #Time to reach the desired height
 
 
     def __init__(self):

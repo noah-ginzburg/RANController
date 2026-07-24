@@ -14,7 +14,7 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from visualization_msgs.msg import Marker, MarkerArray
 
 
-RAN_UPDATE_RATE = 100    #hz
+RAN_UPDATE_RATE = 50    #hz
 RAN_VIS_RADIUS = 0.1    #m, radius of the displayed icosphere
 RAN_VIS_POINT_SIZE = 0.007   #m, size of each node marker
 RAN_VIS_Z_OFFSET = 0.015    #m, shift of the icosphere along the drone's z axis (tune to recenter on the body)
@@ -39,13 +39,12 @@ class SphericalRANServer(Node):
         self.declare_parameter('drone_name', 'cf01')
         self.declare_parameter('ran_vis', True)
 
-        self.declare_parameter('beta', 1.5)
+        self.declare_parameter('beta', 1.726)
         self.declare_parameter('v', 0.5)
-        self.declare_parameter('sigma', 0.5)
+        self.declare_parameter('sigma', 1.5)
         self.declare_parameter('kappa', 20.0)
-        self.declare_parameter('u', 4.3)
+        self.declare_parameter('u', 30.0)
         self.declare_parameter('rate', 1.0)
-        self.declare_parameter('J', 5.0)
         self.declare_parameter('n_sub', 3)
         self.declare_parameter('all_drones', [''])
         self.declare_parameter('target_quality', 20.0)
@@ -63,7 +62,6 @@ class SphericalRANServer(Node):
         self.kappa = self.get_parameter('kappa').value
         self.u = self.get_parameter('u').value
         self.rate = self.get_parameter('rate').value
-        self.J = self.get_parameter('J').value
         self.n_sub = self.get_parameter('n_sub').value
         self.target_quality = self.get_parameter('target_quality').value
         target_names = self.get_parameter('target_names').value
@@ -81,7 +79,7 @@ class SphericalRANServer(Node):
         cache_path = 'src/spherical_ran/spherical_ran/kernel_cache.npz'
         try:
             data = np.load(cache_path)
-            if (data['n_sub'] != self.n_sub or data['J'] != self.J or data['v'] != self.v):
+            if (data['n_sub'] != self.n_sub or data['v'] != self.v):
                 raise ValueError('cached kernel parameters do not match current parameters')
 
             self.nodes = data['nodes']
@@ -116,10 +114,10 @@ class SphericalRANServer(Node):
     def update(self):
         now = self.get_clock().now()
         # self.dt = (now - self.prev_time).nanoseconds * 1e-9
-        self.dt = 0.3
+        self.dt = 0.05
 
-        # self.targets = self._get_targets_from_tf()
-        self.targets = [(1.0, 0.0, np.pi/2, 20.0)]
+        self.targets = self._get_targets_from_tf()
+        # self.targets = [(1.0, 0.0, np.pi/2, 20.0)]
 
         try:
             self_trans = self.tf_buffer.lookup_transform('mocap', self.drone_name, rclpy.time.Time())
@@ -162,14 +160,13 @@ class SphericalRANServer(Node):
             v = relative_pos.transform.translation
             dist = np.sqrt(v.x**2 + v.y**2 + v.z**2)
             if dist < 0.3: 
-                vec = np.array([-vec[X], -vec[Y], vec[Z]])
+                # vec = np.array([-vec[X], -vec[Y], vec[Z]])
+                test=1
 
 
         self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
+        self.heading_pub.publish(self.heading_msg)
 
-        if np.max(self.z) > 1.5:
-            self.heading_pub.publish(self.heading_msg)
-            test=1
         # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
 
        
