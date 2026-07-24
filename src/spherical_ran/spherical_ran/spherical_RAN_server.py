@@ -14,7 +14,7 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from visualization_msgs.msg import Marker, MarkerArray
 
 
-RAN_UPDATE_RATE = 50    #hz
+RAN_UPDATE_RATE = 100    #hz
 RAN_VIS_RADIUS = 0.1    #m, radius of the displayed icosphere
 RAN_VIS_POINT_SIZE = 0.007   #m, size of each node marker
 RAN_VIS_Z_OFFSET = 0.015    #m, shift of the icosphere along the drone's z axis (tune to recenter on the body)
@@ -98,8 +98,11 @@ class SphericalRANServer(Node):
         self.drone_world_pos = np.zeros(3)
 
         self.heading_pub = self.create_publisher(Vector3, f'{self.drone_name}/desired_heading', 10)
+        # rviz's MarkerArray display for this topic (crazyswarm_bringup/rviz/3_targets.rviz)
+        # is configured Reliability Policy: Reliable -- match it, or rviz silently drops
+        # every message (QoS mismatch warning, no markers rendered).
         vis_qos = QoSProfile(depth=1,
-                             reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                             reliability=QoSReliabilityPolicy.RELIABLE,
                              history=QoSHistoryPolicy.KEEP_LAST)
         self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz', vis_qos)
         self._vis_count = 0
@@ -113,10 +116,10 @@ class SphericalRANServer(Node):
     def update(self):
         now = self.get_clock().now()
         # self.dt = (now - self.prev_time).nanoseconds * 1e-9
-        self.dt = 0.4
+        self.dt = 0.3
 
-        self.targets = self._get_targets_from_tf()
-        # self.targets = [(1.0, 0.0, np.pi/2, 20.0)]
+        # self.targets = self._get_targets_from_tf()
+        self.targets = [(1.0, 0.0, np.pi/2, 20.0)]
 
         try:
             self_trans = self.tf_buffer.lookup_transform('mocap', self.drone_name, rclpy.time.Time())
@@ -163,7 +166,10 @@ class SphericalRANServer(Node):
 
 
         self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
-        # self.heading_pub.publish(self.heading_msg)
+
+        if np.max(self.z) > 1.5:
+            self.heading_pub.publish(self.heading_msg)
+            test=1
         # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
 
        
@@ -325,7 +331,7 @@ def main(args=None):
 
     spherical_ran_server = SphericalRANServer()
 
-    time.sleep(5.0)
+    time.sleep(10.0)
     rclpy.spin(spherical_ran_server)
 
     # Destroy the node explicitly

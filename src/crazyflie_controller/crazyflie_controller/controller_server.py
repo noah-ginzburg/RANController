@@ -31,15 +31,20 @@ class DroneController(Node):
         self.declare_parameter('drone_name', 'cf01')
         self.declare_parameter('hover_speed', 0.0)
         self.declare_parameter('real', True)
-        # Desired launch height; set per drone from LAUNCH_HEIGHTS in
-        # real_drone.launch.py (icosphere target drones each fly to their
-        # node's z, others get the default).
+        # Base launch height, same for every drone.
         self.declare_parameter('launch_height', 0.5)
+        # Per-drone vertical offset added on top of launch_height at takeoff --
+        # e.g. the icosphere target drones (cf01/cf02/cf03) each add their
+        # node's z (see delta_z in crazyflies.yaml) so the trio ends up spread
+        # across the equilateral triangle instead of level with each other.
+        # Non-target drones (e.g. cf09) leave this at the default 0.0.
+        self.declare_parameter('delta_z', 0.0)
 
         self.drone_name = self.get_parameter('drone_name').value
         self.hover_speed = self.get_parameter('hover_speed').value
         self.real = self.get_parameter('real').value
         self.launch_height = self.get_parameter('launch_height').value
+        self.delta_z = self.get_parameter('delta_z').value
 
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
@@ -134,6 +139,7 @@ class DroneController(Node):
         return future.result()
 
     def cmd_vel_callback(self, msg: Twist):
+        self.taking_off = False
         self.should_hover = False
         self.last_teleop_msg_time = self.get_clock().now()
         self.set_speeds([msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z])
@@ -146,6 +152,7 @@ class DroneController(Node):
         return v / norm if norm > 0 else v
 
     def des_heading_callback(self, msg: Vector3):
+        self.taking_off = False
         self.should_hover = False
         self.last_teleop_msg_time = self.get_clock().now()
 
@@ -168,7 +175,7 @@ class DroneController(Node):
         time_from_teleop = now - self.last_teleop_msg_time
 
         if time_from_teleop > self.teleop_timeout or self.should_hover:
-            # self.hover()
+            self.hover()
             # self.get_logger().warn(f'drone {self.drone_name} hovering.')
             test=1
 
@@ -180,6 +187,9 @@ class DroneController(Node):
 
         if not self.tf_ready:
             self.get_logger().warn("No tf ready, exiting update loop")
+            return
+
+        if self.taking_off:
             return
 
         if self.should_land: return
@@ -250,8 +260,9 @@ def main(args=None):
             # None means no arm server responded — normal in sim, already warned above.
             drone_controller.get_logger().info('Arm skipped (no arm service); continuing to takeoff.')
 
-    # response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=drone_controller.launch_height, duration=drone_controller.DURATION)
-    response = None
+    target_height = drone_controller.launch_height + drone_controller.delta_z
+    response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=target_height, duration=drone_controller.DURATION)
+    # response = None
 
     drone_controller.get_logger().info("got to takeoff")
     if response is not None:
@@ -260,7 +271,6 @@ def main(args=None):
         drone_controller.get_logger().error('Takeoff service call failed')
 
     time.sleep(drone_controller.DURATION.sec)
-    
     drone_controller.get_logger().info("trying to spin")
 
     try:

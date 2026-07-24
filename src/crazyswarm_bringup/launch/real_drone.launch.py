@@ -47,7 +47,7 @@ def launch_controllers(context, *args, **kwargs):
         ))
     if real:
         actions.append(Node(
-            package='ros2_vicon_receiver',
+            package='vicon_receiver',
             executable='vicon_bridge.py',
             output='screen',
             # send_orientation=True requires firmware with the fixed external-
@@ -60,23 +60,23 @@ def launch_controllers(context, *args, **kwargs):
             # (bags 151857, 152128). Full pose fusion corrects yaw continuously.
             parameters=[{'all_drones': drone_names}, {'send_orientation': True}],
         ))
-    # for name in drone_names:
-    #     actions.append(Node(
-    #         package='crazyflie_controller',
-    #         executable='controller_server',
-    #         name=f'controller_server_{name}',
-    #         output='screen',
-    #         parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real},
-    #                     {'launch_height': float(LAUNCH_HEIGHTS.get(name, DEFAULT_LAUNCH_HEIGHT))}],
-    #     ))
-    #     if name in ran_drones:
-    #         actions.append(Node(
-    #             package='spherical_ran',
-    #             executable='spherical_RAN_server',
-    #             name=f'spherical_RAN_server_{name}',
-    #             output='screen',
-    #             parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
-    #         ))
+    for name in drone_names:
+        actions.append(Node(
+            package='crazyflie_controller',
+            executable='controller_server',
+            name=f'controller_server_{name}',
+            output='screen',
+            parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real},
+                        {'launch_height': float(LAUNCH_HEIGHTS.get(name, DEFAULT_LAUNCH_HEIGHT))}],
+        ))
+        if name in ran_drones:
+            actions.append(Node(
+                package='spherical_ran',
+                executable='spherical_RAN_server',
+                name=f'spherical_RAN_server_{name}',
+                output='screen',
+                parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
+            ))
 
     return actions
 
