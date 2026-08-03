@@ -7,7 +7,6 @@ import numpy as np
 from geometry_msgs.msg import Vector3, Point
 from std_msgs.msg import ColorRGBA
 
-import pyvista as pv
 import tf2_ros
 from rclpy.duration import Duration as RCLDuration
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
@@ -22,7 +21,7 @@ RAN_VIS_Z_MIN = -1.0    #activation value mapped to the cold end of the colormap
 RAN_VIS_Z_MAX = 2.0     #activation value mapped to the hot end of the colormap
 RAN_VIS_COLORMAP = (    #blue -> cyan -> yellow -> red
     (0.0, 0.0, 1.0),
-    (0.0, 1.0, 1.0),    
+    (0.0, 1.0, 1.0),
     (1.0, 1.0, 0.0),
     (1.0, 0.0, 0.0),
 )
@@ -32,10 +31,15 @@ Z = THETA = 2   #theta = z axis angle
 QUALITY = 3
 
 
-class SphericalRANServer(Node):
+class SphericalRANServerFibonacci(Node):
+    """Clone of SphericalRANServer (spherical_RAN_server.py) that uses a
+    Fibonacci-sphere mesh instead of an icosphere. Only _generate_nodes and
+    the kernel cache path differ from the original -- see that file for the
+    icosphere version, which this was cloned from and is left untouched.
+    """
 
     def __init__(self):
-        super().__init__('spherical_RAN_server')
+        super().__init__('spherical_RAN_server_fibonacci')
         self.declare_parameter('drone_name', 'cf01')
         self.declare_parameter('ran_vis', True)
 
@@ -76,7 +80,7 @@ class SphericalRANServer(Node):
         self.dt = 0.0
         self.z = np.zeros(self.num_nodes)
 
-        cache_path = 'src/spherical_ran/spherical_ran/kernel_cache.npz'
+        cache_path = 'src/spherical_ran/spherical_ran/kernel_cache_fibonacci.npz'
         try:
             data = np.load(cache_path)
             if (data['n_sub'] != self.n_sub or data['v'] != self.v):
@@ -89,7 +93,7 @@ class SphericalRANServer(Node):
 
         except (FileNotFoundError, ValueError, OSError) as e:
             self.get_logger().fatal(
-                f'kernel cache unusable ({e}). Run generate_kernel_cache.py and restart.')
+                f'kernel cache unusable ({e}). Run generate_kernel_cache_fibonacci.py and restart.')
             raise RuntimeError(f'kernel cache unusable: {e}') from e
 
         self.targets = []
@@ -159,7 +163,7 @@ class SphericalRANServer(Node):
 
             v = relative_pos.transform.translation
             dist = np.sqrt(v.x**2 + v.y**2 + v.z**2)
-            if dist < 0.3: 
+            if dist < 0.3:
                 # vec = np.array([-vec[X], -vec[Y], vec[Z]])
                 test=1
 
@@ -169,9 +173,9 @@ class SphericalRANServer(Node):
 
         # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
 
-       
+
         self._display_ran_rviz(self.nodes, self.z, vec)
- 
+
 
         self.prev_time = now
 
@@ -261,33 +265,51 @@ class SphericalRANServer(Node):
         return ColorRGBA(r=r, g=g, b=b, a=1.0)
 
     def _generate_nodes(self, n_sub):
-        nodes = pv.Icosphere(radius=1.0, nsub=n_sub)
-        return nodes.points
-    
+        # Fibonacci golden-angle spiral instead of pv.Icosphere -- see
+        # generate_kernel_cache_fibonacci.py's generate_fibonacci_sphere_points
+        # (same formula, kept in sync manually) and the "Storing 3D RAN Nodes"
+        # markdown + Fibonacci-sphere cell in mean_field_model_3d.ipynb.
+        # n_sub only sets the node count here (matching the icosphere's
+        # N = 10*4^n_sub + 2 at the same resolution) -- there's no actual
+        # subdivision step for a Fibonacci sphere.
+        num_nodes = 10 * 4**n_sub + 2
+        i = np.arange(num_nodes)
+        z = 1 - 2 * i / (num_nodes - 1)
+        r_xy = np.sqrt(1 - z**2)
+        golden_ratio = (1 + np.sqrt(5)) / 2
+        golden_angle = 2 * np.pi / golden_ratio**2
+        theta = i * golden_angle
+
+        return np.stack([
+            r_xy * np.cos(theta),
+            r_xy * np.sin(theta),
+            z,
+        ], axis=1)
+
 
     def _generate_sensory_input(self, sphere_points, targets, kappa):
         num_nodes = len(sphere_points)
         b = np.zeros(num_nodes)
-        
+
         for j in range(len(targets)):
             for i in range(num_nodes):
-                target_point = np.array((targets[j][MAG], targets[j][PHI], targets[j][THETA])) 
+                target_point = np.array((targets[j][MAG], targets[j][PHI], targets[j][THETA]))
                 alpha = self._geodesic_distance(sphere_points[i], target_point)
                 b[i] += np.exp(kappa * (np.cos(alpha) - 1.0)) * targets[j][QUALITY]
 
-        b *= (1/np.sqrt(num_nodes)) 
+        b *= (1/np.sqrt(num_nodes))
         return b
 
     def _geodesic_distance(self, point1, point2):
         alpha = np.arccos(np.clip(np.cos(point1[THETA]) * np.cos(point2[THETA]) + np.sin(point1[THETA]) * np.sin(point2[THETA]) * np.cos(point1[PHI] - point2[PHI]), -1, 1))
         return alpha
-    
+
     def _rand_link_func(self, y, sigma, inv_sqrt_n):
         out = np.empty_like(y)
         for i in range(y.size):
             out[i] = np.random.normal(0.0, sigma) * inv_sqrt_n
         return out
-    
+
     def _find_vel_avg_3D(self, points, activations):
         points = np.array(self._polar_to_cartesian_3D(points))
         total_weight = np.sum(activations)
@@ -319,14 +341,14 @@ class SphericalRANServer(Node):
             y = r * np.sin(phi) * np.sin(theta)
             z = r * np.cos(phi)
             cpy[i] = x, y, z
-        return cpy    
+        return cpy
 
 
 
 def main(args=None):
     rclpy.init(args=args)
 
-    spherical_ran_server = SphericalRANServer()
+    spherical_ran_server = SphericalRANServerFibonacci()
 
     time.sleep(10.0)
     rclpy.spin(spherical_ran_server)

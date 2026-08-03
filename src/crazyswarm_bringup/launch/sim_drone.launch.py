@@ -46,7 +46,7 @@ def launch_controllers(context, *args, **kwargs):
         if name in ran_drones:
             actions.append(Node(
                 package='spherical_ran',
-                executable='spherical_RAN_server',
+                executable='spherical_RAN_server_fibonacci',
                 name=f'spherical_RAN_server_{name}',
                 output='screen',
                 parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],

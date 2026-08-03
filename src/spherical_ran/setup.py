@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'spherical_RAN_server = spherical_ran.spherical_RAN_server:main',
+            'spherical_RAN_server_fibonacci = spherical_ran.spherical_RAN_server_fibonacci:main',
         ],
     },
 )
