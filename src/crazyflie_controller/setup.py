@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'controller_server = crazyflie_controller.controller_server:main',
+            'hover_speed_calibration = crazyflie_controller.hover_speed_calibration:main',
         ],
     },
 )

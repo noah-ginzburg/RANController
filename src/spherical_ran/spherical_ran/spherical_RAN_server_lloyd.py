@@ -4,6 +4,8 @@ import time
 import rclpy
 from rclpy.node import Node
 import numpy as np
+import pyvista as pv
+from scipy.spatial import SphericalVoronoi
 from geometry_msgs.msg import Vector3, Point
 from std_msgs.msg import ColorRGBA
 
@@ -31,24 +33,34 @@ Z = THETA = 2   #theta = z axis angle
 QUALITY = 3
 
 
-class SphericalRANServerFibonacci(Node):
-    """Clone of SphericalRANServer (spherical_RAN_server.py) that uses a
-    Fibonacci-sphere mesh instead of an icosphere. Only _generate_nodes and
-    the kernel cache path differ from the original -- see that file for the
-    icosphere version, which this was cloned from and is left untouched.
+class SphericalRANServerLloyd(Node):
+    """Clone of SphericalRANServer (spherical_RAN_server.py) that uses an
+    icosphere relaxed via spherical Lloyd's algorithm (Centroidal Voronoi
+    Tessellation) instead of a bare icosphere. Fixes the icosphere's 12 fixed
+    valence-5 vertices, which are ~16% denser than the rest of the mesh --
+    see the Lloyd-relaxation cell in mean_field_model_3d.ipynb (same
+    algorithm, kept in sync manually) and generate_kernel_cache_lloyd.py.
+    Only _generate_nodes and the kernel cache path differ from the original
+    -- see that file for the plain icosphere version, which this was cloned
+    from and is left untouched.
     """
 
     def __init__(self):
-        super().__init__('spherical_RAN_server_fibonacci')
+        super().__init__('spherical_RAN_server_lloyd')
         self.declare_parameter('drone_name', 'cf01')
         self.declare_parameter('ran_vis', True)
 
         self.declare_parameter('beta', 1.5)
         self.declare_parameter('v', 0.3)
-        self.declare_parameter('sigma', 1.0)
-        self.declare_parameter('kappa', 5.0)
-        self.declare_parameter('u', 32.0)
+        self.declare_parameter('sigma', 0.85)
+        self.declare_parameter('kappa', 7.0)
+        self.declare_parameter('u', 35.0)
         self.declare_parameter('rate', 1.0)
+        # How concentrated the activation has to be, on a 0-1 scale, before we
+        # trust its direction enough to publish a heading -- see class
+        # docstring / the resultant-length comment in update() for what this
+        # number actually measures.
+        self.declare_parameter('bump_threshold', 0.3)
         self.declare_parameter('n_sub', 3)
         self.declare_parameter('all_drones', [''])
         self.declare_parameter('target_quality', 20.0)
@@ -66,6 +78,7 @@ class SphericalRANServerFibonacci(Node):
         self.kappa = self.get_parameter('kappa').value
         self.u = self.get_parameter('u').value
         self.rate = self.get_parameter('rate').value
+        self.bump_threshold = self.get_parameter('bump_threshold').value
         self.n_sub = self.get_parameter('n_sub').value
         self.target_quality = self.get_parameter('target_quality').value
         target_names = self.get_parameter('target_names').value
@@ -80,7 +93,7 @@ class SphericalRANServerFibonacci(Node):
         self.dt = 0.0
         self.z = np.zeros(self.num_nodes)
 
-        cache_path = 'src/spherical_ran/spherical_ran/kernel_cache_fibonacci.npz'
+        cache_path = 'src/spherical_ran/spherical_ran/kernel_cache_lloyd.npz'
         try:
             data = np.load(cache_path)
             if (data['n_sub'] != self.n_sub or data['v'] != self.v):
@@ -93,7 +106,7 @@ class SphericalRANServerFibonacci(Node):
 
         except (FileNotFoundError, ValueError, OSError) as e:
             self.get_logger().fatal(
-                f'kernel cache unusable ({e}). Run generate_kernel_cache_fibonacci.py and restart.')
+                f'kernel cache unusable ({e}). Run generate_kernel_cache_lloyd.py and restart.')
             raise RuntimeError(f'kernel cache unusable: {e}') from e
 
         self.targets = []
@@ -151,9 +164,14 @@ class SphericalRANServerFibonacci(Node):
             # )
 
         vec = self._find_vel_avg_3D(self.nodes, self.z)
-        norm = np.linalg.norm(vec)
-        if norm > 0:
-            vec = vec / norm
+        # `vec` is a weighted average of unit-length node positions, so its
+        # own length is the "mean resultant length" R from directional
+        # statistics: R=1 means every active node points the same way (a
+        # sharp, formed bump); R=0 means the activations cancel out (still
+        # flat/blended, no committed direction yet). This replaces an
+        # arbitrary scalar cutoff on raw activation with the actual
+        # concentration of the population vector -- see the class docstring.
+        r = np.linalg.norm(vec)
 
         for targ in self.other_drones:
             try:
@@ -167,11 +185,12 @@ class SphericalRANServerFibonacci(Node):
                 # vec = np.array([-vec[X], -vec[Y], vec[Z]])
                 test=1
 
+        if r > self.bump_threshold:
+            vec = vec / r
+            self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
+            self.heading_pub.publish(self.heading_msg)
 
-        self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
-        self.heading_pub.publish(self.heading_msg)
-
-        # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | total_weight={np.sum(self.z):.3f}')
+        # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | r={r:.3f}')
 
 
         self._display_ran_rviz(self.nodes, self.z, vec)
@@ -265,27 +284,42 @@ class SphericalRANServerFibonacci(Node):
         return ColorRGBA(r=r, g=g, b=b, a=1.0)
 
     def _generate_nodes(self, n_sub):
-        # Fibonacci golden-angle spiral instead of pv.Icosphere -- see
-        # generate_kernel_cache_fibonacci.py's generate_fibonacci_sphere_points
-        # (same formula, kept in sync manually) and the "Storing 3D RAN Nodes"
-        # markdown + Fibonacci-sphere cell in mean_field_model_3d.ipynb.
-        # n_sub only sets the node count here (matching the icosphere's
-        # N = 10*4^n_sub + 2 at the same resolution) -- there's no actual
-        # subdivision step for a Fibonacci sphere.
-        num_nodes = 10 * 4**n_sub + 2
-        i = np.arange(num_nodes)
-        z = 1 - 2 * i / (num_nodes - 1)
-        r_xy = np.sqrt(1 - z**2)
-        golden_ratio = (1 + np.sqrt(5)) / 2
-        golden_angle = 2 * np.pi / golden_ratio**2
-        theta = i * golden_angle
+        # Icosphere, then relaxed via spherical Lloyd's algorithm (Centroidal
+        # Voronoi Tessellation) -- see generate_kernel_cache_lloyd.py (same
+        # algorithm, kept in sync manually) and the Lloyd-relaxation cell in
+        # mean_field_model_3d.ipynb. This is only a fallback used before the
+        # kernel cache loads below (which overwrites self.nodes with the
+        # exact relaxed points baked into the cache) -- kept so the object
+        # always has a valid self.nodes even if the cache load fails partway.
+        icosphere = pv.Icosphere(radius=1.0, nsub=n_sub)
+        return self._lloyd_relax_sphere(icosphere.points.copy())
 
-        return np.stack([
-            r_xy * np.cos(theta),
-            r_xy * np.sin(theta),
-            z,
-        ], axis=1)
+    def _spherical_triangle_area(self, a, b, c):
+        # Solid angle subtended by triangle a,b,c as seen from the sphere's
+        # center == the triangle's area on the unit sphere (Van Oosterom &
+        # Strackee formula) -- much simpler than L'Huilier's theorem.
+        numer = np.abs(np.dot(a, np.cross(b, c)))
+        denom = 1.0 + np.dot(a, b) + np.dot(b, c) + np.dot(c, a)
+        return 2.0 * np.arctan2(numer, denom)
 
+    def _lloyd_relax_sphere(self, points, n_iter=30):
+        points = points / np.linalg.norm(points, axis=1, keepdims=True)
+        for _ in range(n_iter):
+            sv = SphericalVoronoi(points, radius=1.0, center=np.zeros(3))
+            sv.sort_vertices_of_regions()
+            new_points = np.empty_like(points)
+            for i, region in enumerate(sv.regions):
+                verts = sv.vertices[region]
+                gen = points[i]
+                centroid = np.zeros(3)
+                for j in range(len(verts)):
+                    a, b = verts[j], verts[(j + 1) % len(verts)]
+                    area = self._spherical_triangle_area(gen, a, b)
+                    tri_mid = gen + a + b
+                    centroid += area * (tri_mid / np.linalg.norm(tri_mid))
+                new_points[i] = centroid / np.linalg.norm(centroid)
+            points = new_points
+        return points
 
     def _generate_sensory_input(self, sphere_points, targets, kappa):
         num_nodes = len(sphere_points)
@@ -348,7 +382,7 @@ class SphericalRANServerFibonacci(Node):
 def main(args=None):
     rclpy.init(args=args)
 
-    spherical_ran_server = SphericalRANServerFibonacci()
+    spherical_ran_server = SphericalRANServerLloyd()
 
     time.sleep(10.0)
     rclpy.spin(spherical_ran_server)

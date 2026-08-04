@@ -42,7 +42,7 @@ class SphericalRANServer(Node):
         self.declare_parameter('beta', 1.5)
         self.declare_parameter('v', 0.3)
         self.declare_parameter('sigma', 1.0)
-        self.declare_parameter('kappa', 2.0)
+        self.declare_parameter('kappa', 8.0)
         self.declare_parameter('u', 32.0)
         self.declare_parameter('rate', 1.0)
         self.declare_parameter('n_sub', 3)

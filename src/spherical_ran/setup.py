@@ -11,7 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools', 'pyvista'],
+    install_requires=['setuptools', 'pyvista', 'scipy'],
     zip_safe=True,
     maintainer='noah',
     maintainer_email='noah.ginzburg@gmail.com',
@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'spherical_RAN_server = spherical_ran.spherical_RAN_server:main',
             'spherical_RAN_server_fibonacci = spherical_ran.spherical_RAN_server_fibonacci:main',
+            'spherical_RAN_server_lloyd = spherical_ran.spherical_RAN_server_lloyd:main',
         ],
     },
 )

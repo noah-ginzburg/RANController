@@ -46,7 +46,7 @@ def launch_controllers(context, *args, **kwargs):
         if name in ran_drones:
             actions.append(Node(
                 package='spherical_ran',
-                executable='spherical_RAN_server_fibonacci',
+                executable='spherical_RAN_server_lloyd',
                 name=f'spherical_RAN_server_{name}',
                 output='screen',
                 parameters=[{'drone_name': name}, {'all_drones': drone_names}, {'target_names': target_names}, {'target_qualities': target_qualities}],
@@ -57,7 +57,7 @@ def launch_controllers(context, *args, **kwargs):
 
 def generate_launch_description():
     real_arg = DeclareLaunchArgument('real', default_value='false')
-    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.23')
+    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.1725')
     hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.0')
     # Base height every drone takes off to; per-drone delta_z (from crazyflies.yaml)
     # is added on top of this for the icosphere target drones.
