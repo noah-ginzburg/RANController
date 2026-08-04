@@ -23,7 +23,7 @@ Z_DIR = YAW = 2
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
     GROUP_MASK = 0  #0 = all drones
-    DURATION = Duration(sec=1, nanosec=0)   #Time to reach the desired height
+    DURATION = Duration(sec=2, nanosec=0)   #Time to reach the desired height
 
 
     def __init__(self):
@@ -152,15 +152,14 @@ class DroneController(Node):
         return v / norm if norm > 0 else v
 
     def des_heading_callback(self, msg: Vector3):
-        self.taking_off = False
         self.should_hover = False
         self.last_teleop_msg_time = self.get_clock().now()
 
-        v = np.array([msg.x, msg.y, msg.z])
-        norm = np.linalg.norm(v)
+        self.vel_desired = np.linalg.norm(np.array([msg.x, msg.y, msg.z]))
         # if norm > 0:
         #     v = self._snap_vector(v / norm)
 
+        ####EDIT TOMORROW
         self.set_speeds(self.max_speed * v)
 
         self.get_logger().info(f'setting speeds to {self.max_speed * v}')
@@ -182,7 +181,8 @@ class DroneController(Node):
         else:
             # self.get_logger().warn("No velocity command sent from controller server. Another source might be sending velocity    commands.")
             test=1
-            
+        
+        # self.get_logger().info("logging")
         self._update_pos(dt)
 
         if not self.tf_ready:
@@ -190,8 +190,10 @@ class DroneController(Node):
             return
 
         if self.taking_off:
-            return
-
+            if self._verify_launch_completed():
+                self.taking_off = False
+            else:
+                return
         if self.should_land: return
 
         self.movement_msg.header.stamp = self.get_clock().now().to_msg()
@@ -221,31 +223,56 @@ class DroneController(Node):
             self.movement_msg.twist.angular.y = ang_speeds[PITCH]
             self.movement_msg.twist.angular.z = ang_speeds[YAW]
 
+    def _verify_tf_available(self):
+        if not self.tf_buffer.can_transform('mocap', self.drone_name, rclpy.time.Time()): 
+            return False
+        return True
+
+    def _retrieve_tf_transform(self):
+        try:
+            trans = self.tf_buffer.lookup_transform('mocap', f'{self.drone_name}', rclpy.time.Time(), RCLDuration(seconds=1.0))
+            return trans
+        except (tf2_ros.TransformException) as e:
+            self.get_logger().warn(str(e) + ", drone is being forced to hover")
+            self.should_hover = True
+            return None
+
 
     #Macro, because python has no preprocessor :(
     def hover(self): self.set_speeds(np.array([0.0, 0.0, 0.0]))
 
     def _update_pos(self, dt):
-        if not self.tf_buffer.can_transform('mocap', self.drone_name, rclpy.time.Time()): 
-            return
-        try:
-            trans = self.tf_buffer.lookup_transform('mocap', f'{self.drone_name}', rclpy.time.Time(), RCLDuration(seconds=1.0))
-        except (tf2_ros.TransformException) as e:
-            self.get_logger().warn(str(e) + ", drone is being forced to hover")
-            self.should_hover = True
-            return
+        if not self._verify_tf_available(): return
+
+        trans = self._retrieve_tf_transform()
+        if not trans == None:
+            self.movement_msg.pose.position.x = self.pos[X_DIR] = trans.transform.translation.x
+            self.movement_msg.pose.position.y = self.pos[Y_DIR] = trans.transform.translation.y
+            self.movement_msg.pose.position.z = self.pos[Z_DIR] = trans.transform.translation.z
+            self.movement_msg.pose.orientation = trans.transform.rotation
+
+            self.vel = (self.pos - self.prev_pos)/dt
+            self.tf_ready = True
+            self.prev_trans = trans
+    
+    def _verify_launch_completed(self):
+        if not self._verify_tf_available(): return
         
-        self.movement_msg.pose.position.x = self.pos[X_DIR] = trans.transform.translation.x
-        self.movement_msg.pose.position.y = self.pos[Y_DIR] = trans.transform.translation.y
-        self.movement_msg.pose.position.z = self.pos[Z_DIR] = trans.transform.translation.z
-        self.movement_msg.pose.orientation = trans.transform.rotation
+        trans = self._retrieve_tf_transform()
+        if not trans == None:
+        
+            #debugging
+            # if self.drone_name == 'cf09':
+            #     self.get_logger().info(f"z_pos: {self.pos[Z_DIR]}")
+            #     self.get_logger().info(f"launch height: {self.launch_height + self.delta_z}")
 
-        self.vel = (self.pos - self.prev_pos)/dt
-        self.tf_ready = True
-        self.prev_trans = trans
-
-
-
+            if self.pos[Z_DIR] >= (self.launch_height + self.delta_z - 0.1) and self.vel[Z_DIR] <= self.hover_speed:
+                self.get_logger().info(f'Drone {self.drone_name} completed launch, current height: {self.pos[Z_DIR]}')
+                return True
+    
+    def _update_hover_speed_pd(self):
+        test = 1
+    
 def main(args=None):
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)    
     # rclpy.init(args=args)    

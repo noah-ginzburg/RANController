@@ -61,7 +61,7 @@ def generate_launch_description():
     hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.0')
     # Base height every drone takes off to; per-drone delta_z (from crazyflies.yaml)
     # is added on top of this for the icosphere target drones.
-    launch_height_arg = DeclareLaunchArgument('launch_height', default_value='1.5')
+    launch_height_arg = DeclareLaunchArgument('launch_height', default_value='0.5')
     # Must match the drones marked `enabled: true` in crazyflies.yaml — the sim
     # server only creates takeoff/land/arm services for enabled drones, and a
     # controller for a missing drone blocks forever in wait_for_service.
