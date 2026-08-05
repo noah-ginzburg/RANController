@@ -57,7 +57,8 @@ def launch_controllers(context, *args, **kwargs):
 
 def generate_launch_description():
     real_arg = DeclareLaunchArgument('real', default_value='false')
-    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.1725')
+    #initial hover speed guess, pid takes over in sim
+    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.218')
     hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.0')
     # Base height every drone takes off to; per-drone delta_z (from crazyflies.yaml)
     # is added on top of this for the icosphere target drones.
@@ -65,10 +66,10 @@ def generate_launch_description():
     # Must match the drones marked `enabled: true` in crazyflies.yaml — the sim
     # server only creates takeoff/land/arm services for enabled drones, and a
     # controller for a missing drone blocks forever in wait_for_service.
-    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf09,cf01,cf02,cf03')
-    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf09')
-    target_names_arg = DeclareLaunchArgument('target_names', default_value='cf01,cf02,cf03')
-    target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='20.0,20.0,20.0')
+    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf09')
+    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='')
+    target_names_arg = DeclareLaunchArgument('target_names', default_value='')
+    target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='')
 
     pkg_crazyswarm2 = get_package_share_directory('crazyflie')
 
