@@ -49,6 +49,7 @@ class DroneController(Node):
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
         self.arm_cli = self.create_client(Arm, f'{self.drone_name}/arm')
+        self.goto_cli = self.create_client(GoTo, f'{self.drone_name}/arm')
         self.emergency_cli = self.create_client(Empty, f'{self.drone_name}/emergency')
 
 
@@ -73,8 +74,6 @@ class DroneController(Node):
 
         self.vel_desired = np.array([0.0, 0.0, 0.0])
         self.pos_desired = None
-        self.prev_e = np.array([0.0, 0.0, 0.0])
-        self.e_i = np.array([0.0, 0.0, 0.0])
 
         self.movement_msg = FullState()
         self.movement_msg.acc.x = 0.0
@@ -96,7 +95,6 @@ class DroneController(Node):
 
         self.last_teleop_msg_time = self.get_clock().now()
         self.teleop_timeout = RCLDuration(seconds=0.5)
-
 
     def send_arm_req(self, arm: bool):
         # Only the cflib/cpp (real) backends provide an arm service; the sim backend
@@ -136,11 +134,24 @@ class DroneController(Node):
         return self.future.result()
 
     def send_emergency_req(self):
-        # Cuts the motors immediately. Bounded spin so a wedged executor can't
+        # Cuts the motors immediate ly. Bounded spin so a wedged executor can't
         # block the panic stop, but we still pump the link once to transmit it.
         future = self.emergency_cli.call_async(Empty.Request())
         rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
         return future.result()
+
+    def send_goto_req(self, group_mask, relative, goal, yaw, duration):
+        req = GoTo.Request()
+        req.group_mask = group_mask
+        req.relative = relative
+        req.goal = goal
+        req.yaw = yaw
+        req.duration = duration
+
+        self.future = self.goto_cli_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, self.future)
+        return self.future.result()
+
 
     def cmd_vel_callback(self, msg: Twist):
         self.taking_off = False
@@ -181,8 +192,6 @@ class DroneController(Node):
             if self.pos_desired is None and not self.taking_off:
                 self.get_logger().warn(f'recording current pos: {self.pos}')
                 self.pos_desired = self.pos.copy()
-                self.e_i = np.array([0.0, 0.0, 0.0])
-                self.prev_e = np.array([0.0, 0.0, 0.0])
             self.get_logger().warn(f'drone {self.drone_name} hovering.')
             test=1
         else:
@@ -203,7 +212,10 @@ class DroneController(Node):
 
         commanded_vel = np.array(self.vel_desired, dtype=float)
         if not self.real and self.pos_desired is not None:
-            commanded_vel = commanded_vel + self._update_hover_speed_pid_sim(dt)
+            commanded_vel = np.array([0.0, 0.0, 0.0])
+            self.movement_msg.pose.position.x = self.pos_desired[X_DIR]
+            self.movement_msg.pose.position.y = self.pos_desired[Y_DIR]
+            self.movement_msg.pose.position.z = self.pos_desired[Z_DIR]
 
         self.set_speeds(commanded_vel)
 
@@ -227,7 +239,8 @@ class DroneController(Node):
     def set_speeds(self, lin_speeds, ang_speeds=None):
         self.movement_msg.twist.linear.x = lin_speeds[X_DIR]
         self.movement_msg.twist.linear.y = lin_speeds[Y_DIR]
-        self.movement_msg.twist.linear.z = lin_speeds[Z_DIR] + self.hover_speed
+        hover_bias = self.hover_speed if self.real else 0.0
+        self.movement_msg.twist.linear.z = lin_speeds[Z_DIR] + hover_bias
 
         if not ang_speeds == None:
             self.movement_msg.twist.angular.x = ang_speeds[ROLL]
@@ -280,23 +293,6 @@ class DroneController(Node):
                 self.get_logger().info(f'Drone {self.drone_name} completed launch, current height: {self.pos[Z_DIR]}')
                 return True
     
-    def _update_hover_speed_pid_sim(self, dt):
-        kp = 20.0
-        ki = 3.5
-        kd = 20.0
-        i_limit = self.max_speed * 0.3
-
-        e_now = self.pos_desired - self.pos
-        self.e_i = np.clip(self.e_i + (e_now * dt), -i_limit, i_limit)
-        e_d  = (e_now - self.prev_e) / dt
-        correction = kp * e_now + ki * self.e_i + kd * e_d
-
-        self.get_logger().info(f'desired pos = {self.pos_desired}')
-        self.get_logger().info(f'current pos = {self.pos}')
-        self.get_logger().info(f'correction = {correction}')
-        self.prev_e = e_now
-        return correction
-    
 def main(args=None):
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)    
     # rclpy.init(args=args)    
@@ -321,7 +317,6 @@ def main(args=None):
     else:
         drone_controller.get_logger().error('Takeoff service call failed')
 
-    time.sleep(drone_controller.DURATION.sec)
     drone_controller.get_logger().info("trying to spin")
 
     try:
