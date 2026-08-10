@@ -64,6 +64,15 @@ def _wrap_pi(angle):
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def _drone_name_from_argv():
+    """Pull `-p drone_name:=X` out of the command line, before any node exists."""
+    import sys
+    for arg in sys.argv:
+        if arg.startswith('drone_name:='):
+            return arg.split(':=', 1)[1]
+    return None
+
+
 def _pct(value, full_scale):
     """Scale to a 0-100 bar value, clamped."""
     return max(0.0, min(100.0, 100.0 * value / full_scale))
@@ -71,10 +80,16 @@ def _pct(value, full_scale):
 
 class TelemetryModel(Node):
 
-    def __init__(self, **kwargs):
-        # **kwargs so a caller (or a test) can pass parameter_overrides.
-        super().__init__('crazyflie_debug_gui', **kwargs)
-        self.declare_parameter('drone_name', 'cf09')
+    def __init__(self, drone_name=None, **kwargs):
+        # The node name must be fixed at construction - ROS can't rename later,
+        # and the drone_name parameter only arrives after super().__init__().
+        # So sniff it from the command line first, and encode it into the node
+        # name so two GUIs never collide. Under launch, the Node action's
+        # name= overrides this anyway.
+        if drone_name is None:
+            drone_name = _drone_name_from_argv() or 'cf09'
+        super().__init__(f'{drone_name}_debug_gui', **kwargs)
+        self.declare_parameter('drone_name', drone_name)
         # fake_data:=true synthesises telemetry for working on the GUI with no
         # drone and no mocap. Commands are still published for real, because the
         # controller server validates them against ITS OWN tf - so a fake

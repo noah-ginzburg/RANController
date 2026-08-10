@@ -24,7 +24,9 @@ Z_DIR = YAW = 2
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
     GROUP_MASK = 0  #0 = all drones
-    DURATION = Duration(sec=2, nanosec=0)   #Time to reach the desired height
+    LAUNCH_DURATION = Duration(sec=2, nanosec=0)   #Time to reach the desired height
+    LAND_DURATION = Duration(sec=5, nanosec=0)   #Time to land
+    GOTO_DURATION = Duration(sec=5, nanosec=0)   #time for GOTO
 
 
     def __init__(self):
@@ -50,7 +52,11 @@ class DroneController(Node):
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
         self.arm_cli = self.create_client(Arm, f'{self.drone_name}/arm')
-        self.goto_cli = self.create_client(GoTo, f'{self.drone_name}/goto')
+        # NOTE: the service is "go_to", not "goto" - both the sim
+        # (crazyflie_sim/crazyflie_server.py) and the real backend
+        # (crazyflie_server.cpp) advertise it with the underscore. A client on
+        # the wrong name never matches and call_async silently does nothing.
+        self.goto_cli = self.create_client(GoTo, f'{self.drone_name}/go_to')
         self.emergency_cli = self.create_client(Empty, f'{self.drone_name}/emergency')
 
 
@@ -79,6 +85,17 @@ class DroneController(Node):
 
         self.vel_desired = np.array([0.0, 0.0, 0.0])
         self.pos_desired = None
+        # Active GoTo target (sim). pos_desired is walked toward this at
+        # GOTO_SPEED instead of jumping, otherwise the setpoint steps and the
+        # drone lunges at it.
+        self.goto_target = None
+        # Commanded yaw (rad). None = leave orientation as TF reports it.
+        self.yaw_desired = None
+        self.yaw_target = None
+        # REAL only: while set, the high-level GoTo owns the drone and update()
+        # publishes nothing, so our streaming setpoints can't fight it.
+        self.goto_wait = None
+        self.goto_wait_deadline = None
 
         self.movement_msg = FullState()
         self.movement_msg.acc.x = 0.0
@@ -146,6 +163,7 @@ class DroneController(Node):
         return future.result()
 
     def send_goto_req(self, group_mask, relative, goal, yaw, duration):
+
         req = GoTo.Request()
         req.group_mask = group_mask
         req.relative = relative
@@ -162,6 +180,102 @@ class DroneController(Node):
     # either already flying or being held, and commanding a takeoff from there
     # spins the motors in someone's hand.
     TAKEOFF_MAX_GROUND_HEIGHT = 0.1  # m
+
+    # How fast the GoTo setpoint is allowed to travel, m/s. This limits the
+    # SETPOINT, not the drone: the drone chases the setpoint, so a slow ramp
+    # keeps the position error small and the motion smooth.
+    GOTO_SPEED = 0.4
+    GOTO_ARRIVED_M = 0.02
+    GOTO_YAW_SPEED = 0.8       # rad/s the yaw setpoint may travel
+    GOTO_ARRIVED_RAD = 0.02
+    GOTO_REACHED_M = 0.05      # real: "close enough" to the GoTo target
+    GOTO_TIMEOUT_S = 20.0      # real: give up waiting, never block forever
+
+    def _await_goto(self, now):
+        """REAL only. True means 'still travelling - update() must not publish'.
+
+        While the high-level GoTo runs, our own 50 Hz setpoint stream would
+        fight it, so we stay silent until the drone arrives. Bounded by a
+        timeout: a drone that never reaches the target must not wedge the
+        controller forever with no way to command it again.
+        """
+        if self.goto_wait is None:
+            return False
+
+        if self.tf_ready and not np.isnan(self.pos).any():
+            dist = float(np.linalg.norm(self.pos - self.goto_wait))
+            if dist <= self.GOTO_REACHED_M:
+                self.get_logger().info(
+                    f'GoTo: reached target (within {dist:.3f} m); resuming control.')
+                self.pos_desired = self.goto_wait.copy()
+                self.goto_wait = None
+                self.goto_wait_deadline = None
+                return False
+
+        if now > self.goto_wait_deadline:
+            self.get_logger().error(
+                f'GoTo: TIMED OUT after {self.GOTO_TIMEOUT_S:.0f}s without reaching '
+                f'{self.goto_wait}; resuming control so the drone stays commandable.')
+            self.pos_desired = None
+            self.goto_wait = None
+            self.goto_wait_deadline = None
+            return False
+
+        return True
+
+    @staticmethod
+    def _yaw_from_quat(q):
+        siny = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        return float(np.arctan2(siny, cosy))
+
+    def _step_yaw(self, dt):
+        """Walk yaw_desired toward yaw_target, then force it into the command.
+
+        Without this, _update_pos() copies the MEASURED orientation into the
+        command every cycle, so the commanded yaw always equals the current
+        yaw and the drone can never rotate.
+        """
+        if self.yaw_desired is None:
+            return
+        if self.yaw_target is not None and dt > 0.0:
+            dt = min(dt, 2.0 / self.UPDATE_RATE)
+            err = (self.yaw_target - self.yaw_desired + np.pi) % (2 * np.pi) - np.pi
+            step = self.GOTO_YAW_SPEED * dt
+            if abs(err) <= max(step, self.GOTO_ARRIVED_RAD):
+                self.yaw_desired = self.yaw_target
+                self.yaw_target = None
+                self.get_logger().info(
+                    f'GoTo: yaw arrived at {np.degrees(self.yaw_desired):.1f} deg')
+            else:
+                self.yaw_desired += np.sign(err) * step
+
+        # Overwrite the orientation _update_pos() just copied from TF.
+        self.movement_msg.pose.orientation.x = 0.0
+        self.movement_msg.pose.orientation.y = 0.0
+        self.movement_msg.pose.orientation.z = float(np.sin(self.yaw_desired / 2.0))
+        self.movement_msg.pose.orientation.w = float(np.cos(self.yaw_desired / 2.0))
+
+    def _step_goto(self, dt):
+        """Walk pos_desired toward goto_target at GOTO_SPEED."""
+        if self.goto_target is None or dt <= 0.0:
+            return
+        if self.pos_desired is None:
+            self.pos_desired = self.pos.copy()
+        # prev_time is only updated at the END of update(), and several paths
+        # return early, so dt can arrive very large. Uncapped, that turns one
+        # tick into a jump straight to the target - the lunge we are avoiding.
+        dt = min(dt, 1.0 / self.UPDATE_RATE * 2.0)
+
+        delta = self.goto_target - self.pos_desired
+        dist = float(np.linalg.norm(delta))
+        step = self.GOTO_SPEED * dt
+        if dist <= max(step, self.GOTO_ARRIVED_M):
+            self.pos_desired = self.goto_target.copy()
+            self.goto_target = None
+            self.get_logger().info(f'GoTo: setpoint arrived at {self.pos_desired}')
+        else:
+            self.pos_desired = self.pos_desired + (delta / dist) * step
 
     def debug_command_callback(self, msg: DebugFlags):
         """Handle one command from the debug GUI.
@@ -182,6 +296,8 @@ class DroneController(Node):
                 f'EMERGENCY STOP from debug GUI - cutting motors on {self.drone_name}.')
             self.should_land = True
             self.taking_off = False
+            self.goto_target = None
+            self.goto_wait = None
             self.emergency_cli.call_async(Empty.Request())
         elif msg.command == DebugFlags.CMD_GOTO:
             self._debug_goto(msg)
@@ -216,13 +332,15 @@ class DroneController(Node):
         req = Takeoff.Request()
         req.group_mask = self.GROUP_MASK
         req.height = float(height)
-        req.duration = self.DURATION
+        req.duration = self.LAUNCH_DURATION
         self.cli.call_async(req)
 
     def _debug_land(self):
         self.get_logger().info(f'Land from debug GUI ({self.drone_name}).')
         self.should_land = True
         self.taking_off = False
+        self.goto_target = None      # abandon any in-progress GoTo
+        self.goto_wait = None
 
         # height is the descent distance to travel, so negative current altitude
         # brings it to the floor (same convention as the Ctrl+C path in main()).
@@ -233,14 +351,48 @@ class DroneController(Node):
         req = Land.Request()
         req.group_mask = self.GROUP_MASK
         req.height = land_height
-        req.duration = self.DURATION
+        req.duration = self.LAND_DURATION
         self.land_cli.call_async(req)
 
     def _debug_goto(self, msg: DebugFlags):
+        self.taking_off = False
+        self.should_land = False
+
+        if not self.real:
+            # SIM: the high-level go_to service is unusable here. Streaming
+            # cmd_full_state puts the sim in MODE_LOW_FULLSTATE, and
+            # crazyflie_sil.goTo() only accepts MODE_HIGH_POLY - it raises
+            # "goTo from low-level modes not yet supported", which kills the
+            # service callback (that is why a second click then reports the
+            # service as missing). Only takeoff/land restore HIGH_POLY, so the
+            # service can never work once our control loop is running.
+            # Our own loop already position-controls in sim, so move the
+            # setpoint instead. NOTE: yaw is not applied on this path.
+            self.should_hover = True
+            if self.pos_desired is None:
+                self.pos_desired = self.pos.copy()
+            # Ramp toward it in update(); assigning it directly is a step change
+            # and the drone lunges.
+            self.goto_target = np.array([msg.x, msg.y, msg.z], dtype=float)
+            # Start the yaw ramp from where the drone actually is, otherwise the
+            # first step is a jump from 0.
+            if self.yaw_desired is None:
+                self.yaw_desired = self._yaw_from_quat(
+                    self.movement_msg.pose.orientation)
+            self.yaw_target = float(msg.yaw)
+            self.get_logger().info(
+                f'GoTo (sim setpoint): [{msg.x:.3f} {msg.y:.3f} {msg.z:.3f}] '
+                f'yaw={np.degrees(msg.yaw):.1f} deg, ramping at '
+                f'{self.GOTO_SPEED} m/s / {self.GOTO_YAW_SPEED} rad/s')
+            return
+
+        if not self.goto_cli.service_is_ready():
+            self.get_logger().error(
+                f'GoTo REFUSED: {self.drone_name}/go_to service not available.')
+            return
         self.get_logger().info(
             f'GoTo from debug GUI: [{msg.x:.3f} {msg.y:.3f} {msg.z:.3f}] yaw={msg.yaw:.3f}')
         self.should_hover = False
-        self.taking_off = False
 
         req = GoTo.Request()
         req.group_mask = self.GROUP_MASK
@@ -249,8 +401,21 @@ class DroneController(Node):
         req.goal.y = float(msg.y)
         req.goal.z = float(msg.z)
         req.yaw = float(msg.yaw)
-        req.duration = Duration(sec=int(msg.duration), nanosec=0) if msg.duration > 0 else self.DURATION
+        req.duration = Duration(sec=int(msg.duration), nanosec=0) if msg.duration > 0 else self.GOTO_DURATION
+
+        # call_async, never spin_until_future_complete: we are inside a
+        # subscription callback and spinning here re-enters the executor.
         self.goto_cli.call_async(req)
+
+        # Hand the drone to the high-level commander and go quiet until it
+        # arrives at the position from this very message.
+        self.goto_wait = np.array([msg.x, msg.y, msg.z], dtype=float)
+        self.goto_wait_deadline = self.get_clock().now() + RCLDuration(
+            seconds=self.GOTO_TIMEOUT_S)
+        self.pos_desired = None
+        self.get_logger().info(
+            f'GoTo: holding all other control until {self.goto_wait} is reached '
+            f'(timeout {self.GOTO_TIMEOUT_S:.0f}s).')
 
     def cmd_vel_callback(self, msg: Twist):
         self.taking_off = False
@@ -288,6 +453,18 @@ class DroneController(Node):
         # self.get_logger().info("logging")
         self._update_pos(dt)
 
+        # REAL: while a high-level GoTo is travelling, publish nothing at all -
+        # our stream would override it. Position tracking above still runs so we
+        # can see when we arrive. prev_time/prev_pos are advanced before the
+        # early return, otherwise dt accumulates and the next tick jumps.
+        if self._await_goto(now):
+            self.prev_time = now
+            self.prev_pos = self.pos.copy()
+            return
+
+        self._step_goto(dt)
+        self._step_yaw(dt)      # must run AFTER _update_pos, which resets orientation
+
         if time_from_teleop > self.teleop_timeout or self.should_hover:
             if self.pos_desired is None and not self.taking_off:
                 self.get_logger().warn(f'recording current pos: {self.pos}')
@@ -303,8 +480,11 @@ class DroneController(Node):
 
             self.set_speeds(commanded_vel)
         else:
+            # Teleop has taken over - drop any in-progress GoTo with it.
             self.pos_desired = None
-        
+            self.goto_target = None
+            self.goto_wait = None
+
         if not self.tf_ready:
             self.get_logger().warn("No tf ready, exiting update loop")
             return
@@ -408,7 +588,7 @@ def main(args=None):
             drone_controller.get_logger().info('Arm skipped (no arm service); continuing to takeoff.')
 
     target_height = drone_controller.launch_height + drone_controller.delta_z
-    response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=target_height, duration=drone_controller.DURATION)
+    response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=target_height, duration=drone_controller.LAUNCH_DURATION)
     # response = None
 
     if response is not None:
@@ -430,9 +610,9 @@ def main(args=None):
             # altitude so the drone is commanded down to the floor. NOTE: pos[Z]
             # comes from the cf01 TF and can go NaN/stale on tracking loss.
             land_height = -drone_controller.pos[Z_DIR]
-            land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=land_height, duration=drone_controller.DURATION)
+            land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=land_height, duration=drone_controller.LAND_DURATION)
             drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land (height={land_height}).')
-            if land_resp is not None: time.sleep(drone_controller.DURATION.sec)
+            if land_resp is not None: time.sleep(drone_controller.LAND_DURATION.sec)
         except KeyboardInterrupt:
             drone_controller.get_logger().fatal(
                 f'User hit Ctrl+C again. EMERGENCY STOP — cutting motors on {drone_controller.drone_name}.')
