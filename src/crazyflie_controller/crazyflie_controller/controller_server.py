@@ -2,6 +2,7 @@ import sys
 import time
 from crazyflie_interfaces.srv import Takeoff, Land, GoTo, Arm
 from crazyflie_interfaces.msg import FullState, VelocityWorld
+from crazyflie_debug_interfaces.msg import DebugFlags
 from std_srvs.srv import Empty
 import rclpy
 from rclpy.node import Node
@@ -49,7 +50,7 @@ class DroneController(Node):
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
         self.arm_cli = self.create_client(Arm, f'{self.drone_name}/arm')
-        self.goto_cli = self.create_client(GoTo, f'{self.drone_name}/arm')
+        self.goto_cli = self.create_client(GoTo, f'{self.drone_name}/goto')
         self.emergency_cli = self.create_client(Empty, f'{self.drone_name}/emergency')
 
 
@@ -58,6 +59,10 @@ class DroneController(Node):
 
         self.cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         self.des_heading_sub = self.create_subscription(Vector3, f'{self.drone_name}/desired_heading', self.des_heading_callback, 10)
+        # Commands from the debug GUI. The GUI publishes instead of calling the
+        # services itself so a slow/hung service can't freeze its window.
+        self.debug_cmd_sub = self.create_subscription(
+            DebugFlags, f'/{self.drone_name}/debug_command', self.debug_command_callback, 10)
 
         self.create_timer(1.0 / self.UPDATE_RATE, self.update)
         self.prev_time = self.get_clock().now()
@@ -148,15 +153,110 @@ class DroneController(Node):
         req.yaw = yaw
         req.duration = duration
 
-        self.future = self.goto_cli_cli.call_async(req)
+        self.future = self.goto_cli.call_async(req)
         rclpy.spin_until_future_complete(self, self.future)
         return self.future.result()
 
+
+    # Refuse a takeoff if the drone is already this far off the floor. It is
+    # either already flying or being held, and commanding a takeoff from there
+    # spins the motors in someone's hand.
+    TAKEOFF_MAX_GROUND_HEIGHT = 0.1  # m
+
+    def debug_command_callback(self, msg: DebugFlags):
+        """Handle one command from the debug GUI.
+
+        Everything here uses call_async, NOT send_*_req(): those spin the node
+        with spin_until_future_complete, and doing that inside a callback
+        re-enters the executor we are already spinning in.
+        """
+        if msg.drone_name and msg.drone_name != self.drone_name:
+            return
+
+        if msg.command == DebugFlags.CMD_TAKEOFF:
+            self._debug_takeoff(msg)
+        elif msg.command == DebugFlags.CMD_LAND:
+            self._debug_land()
+        elif msg.command == DebugFlags.CMD_ESTOP:
+            self.get_logger().fatal(
+                f'EMERGENCY STOP from debug GUI - cutting motors on {self.drone_name}.')
+            self.should_land = True
+            self.taking_off = False
+            self.emergency_cli.call_async(Empty.Request())
+        elif msg.command == DebugFlags.CMD_GOTO:
+            self._debug_goto(msg)
+
+    def _debug_takeoff(self, msg: DebugFlags):
+        # No TF means we cannot prove the drone is on the ground, so we refuse
+        # rather than assume. Silence is not evidence of being landed.
+        if not self.tf_ready:
+            self.get_logger().error(
+                'Takeoff REFUSED: no TF yet, cannot verify the drone is on the ground.')
+            return
+
+        z = float(self.pos[Z_DIR])
+        if np.isnan(z):
+            self.get_logger().error('Takeoff REFUSED: current z is NaN (tracking lost).')
+            return
+        if z > self.TAKEOFF_MAX_GROUND_HEIGHT:
+            self.get_logger().error(
+                f'Takeoff REFUSED: drone is at z={z:.3f} m, above the '
+                f'{self.TAKEOFF_MAX_GROUND_HEIGHT:.2f} m ground limit. '
+                'It is already airborne or being held.')
+            return
+
+        height = msg.height if msg.height > 0.0 else (self.launch_height + self.delta_z)
+        self.get_logger().info(
+            f'Takeoff from debug GUI: z={z:.3f} m -> {height:.3f} m')
+
+        self.taking_off = True
+        self.should_land = False
+        self.pos_desired = None
+
+        req = Takeoff.Request()
+        req.group_mask = self.GROUP_MASK
+        req.height = float(height)
+        req.duration = self.DURATION
+        self.cli.call_async(req)
+
+    def _debug_land(self):
+        self.get_logger().info(f'Land from debug GUI ({self.drone_name}).')
+        self.should_land = True
+        self.taking_off = False
+
+        # height is the descent distance to travel, so negative current altitude
+        # brings it to the floor (same convention as the Ctrl+C path in main()).
+        land_height = -float(self.pos[Z_DIR]) if self.tf_ready else 0.0
+        if np.isnan(land_height):
+            land_height = 0.0
+
+        req = Land.Request()
+        req.group_mask = self.GROUP_MASK
+        req.height = land_height
+        req.duration = self.DURATION
+        self.land_cli.call_async(req)
+
+    def _debug_goto(self, msg: DebugFlags):
+        self.get_logger().info(
+            f'GoTo from debug GUI: [{msg.x:.3f} {msg.y:.3f} {msg.z:.3f}] yaw={msg.yaw:.3f}')
+        self.should_hover = False
+        self.taking_off = False
+
+        req = GoTo.Request()
+        req.group_mask = self.GROUP_MASK
+        req.relative = False
+        req.goal.x = float(msg.x)
+        req.goal.y = float(msg.y)
+        req.goal.z = float(msg.z)
+        req.yaw = float(msg.yaw)
+        req.duration = Duration(sec=int(msg.duration), nanosec=0) if msg.duration > 0 else self.DURATION
+        self.goto_cli.call_async(req)
 
     def cmd_vel_callback(self, msg: Twist):
         self.taking_off = False
         self.should_hover = False
         self.last_teleop_msg_time = self.get_clock().now()
+        self.get_logger().info(f'Teleop: setting speeds to {[msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z]}')
         self.set_speeds([msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z])
 
     SNAP_THRESHOLD = 0.05
@@ -192,8 +292,16 @@ class DroneController(Node):
             if self.pos_desired is None and not self.taking_off:
                 self.get_logger().warn(f'recording current pos: {self.pos}')
                 self.pos_desired = self.pos.copy()
-            self.get_logger().warn(f'drone {self.drone_name} hovering.')
-            test=1
+            # self.get_logger().warn(f'drone {self.drone_name} hovering.')
+            
+            commanded_vel = np.array(self.vel_desired, dtype=float)
+            if not self.real and self.pos_desired is not None:
+                commanded_vel = np.array([0.0, 0.0, 0.0])
+                self.movement_msg.pose.position.x = self.pos_desired[X_DIR]
+                self.movement_msg.pose.position.y = self.pos_desired[Y_DIR]
+                self.movement_msg.pose.position.z = self.pos_desired[Z_DIR]
+
+            self.set_speeds(commanded_vel)
         else:
             self.pos_desired = None
         
@@ -210,15 +318,6 @@ class DroneController(Node):
                 return
         if self.should_land: return
 
-        commanded_vel = np.array(self.vel_desired, dtype=float)
-        if not self.real and self.pos_desired is not None:
-            commanded_vel = np.array([0.0, 0.0, 0.0])
-            self.movement_msg.pose.position.x = self.pos_desired[X_DIR]
-            self.movement_msg.pose.position.y = self.pos_desired[Y_DIR]
-            self.movement_msg.pose.position.z = self.pos_desired[Z_DIR]
-
-        self.set_speeds(commanded_vel)
-
         self.movement_msg.header.stamp = self.get_clock().now().to_msg()
         self.movement_msg.header.frame_id = self.drone_name
 
@@ -232,6 +331,7 @@ class DroneController(Node):
             self.movement_pub.publish(velocity_msg)
         else:
             self.movement_pub.publish(self.movement_msg)
+            self.get_logger().info(f'sim: speeds = {self.movement_msg.twist.linear.x}, {self.movement_msg.twist.linear.y}, {self.movement_msg.twist.linear.z}')
 
         self.prev_time = now
         self.prev_pos = self.pos.copy()
@@ -272,8 +372,8 @@ class DroneController(Node):
             self.movement_msg.pose.position.z = self.pos[Z_DIR] = trans.transform.translation.z
             self.movement_msg.pose.orientation = trans.transform.rotation
 
-            self.get_logger().info(f'current z_pos from tf: {trans.transform.translation.z}')
-            self.get_logger().info(f'current vel from prev update: {self.vel[Z_DIR]}')
+            # self.get_logger().info(f'current z_pos from tf: {trans.transform.translation.z}')
+            # self.get_logger().info(f'current vel from prev update: {self.vel[Z_DIR]}')
             self.vel = (self.pos - self.prev_pos)/dt
             self.tf_ready = True
             self.prev_trans = trans
@@ -311,7 +411,6 @@ def main(args=None):
     response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=target_height, duration=drone_controller.DURATION)
     # response = None
 
-    drone_controller.get_logger().info("got to takeoff")
     if response is not None:
         drone_controller.get_logger().info('Takeoff command executed successfully')
     else:

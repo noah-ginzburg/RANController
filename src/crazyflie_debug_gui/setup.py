@@ -24,6 +24,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'crazyflie_debug_gui = crazyflie_debug_gui.debug_gui:main',
+            'crazyflie_debug_gui_window = crazyflie_debug_gui.window:main',
+            'crazyflie_debug_gui_telemetry = crazyflie_debug_gui.telemetry_model:main',
         ],
     },
 )
