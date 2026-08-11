@@ -9,8 +9,13 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 install(DIRECTORY
-  launch rviz
+  launch rviz config
   DESTINATION share/${PROJECT_NAME}/
+)
+
+install(PROGRAMS
+  scripts/static_target_server.py
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 # uncomment the following section in order to fill in

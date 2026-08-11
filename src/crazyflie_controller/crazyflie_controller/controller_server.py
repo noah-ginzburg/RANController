@@ -75,7 +75,7 @@ class DroneController(Node):
         self.now = 0.0
 
         self.w_abs_desired = 0.0
-        self.max_speed = 0.5
+        self.max_speed = 0.2
 
         self.pos = np.array([0.0, 0.0, 0.0])
         self.prev_pos = np.array([0.0, 0.0, 0.0])
@@ -424,7 +424,6 @@ class DroneController(Node):
         self.get_logger().info(f'Teleop: setting speeds to {[msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z]}')
         self.set_speeds([msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z])
 
-    SNAP_THRESHOLD = 0.05
 
     def _snap_vector(self, v):
         v[np.abs(v) < self.SNAP_THRESHOLD] = 0.0
@@ -433,22 +432,13 @@ class DroneController(Node):
 
     def des_heading_callback(self, msg: Vector3):
         self.should_hover = False
-        self.last_teleop_msg_time = self.get_clock().now()
-
         self.vel_desired = self.max_speed * np.array([msg.x, msg.y, msg.z])
-        # if norm > 0:
-        #     v = self._snap_vector(v / norm)
-
-        ####EDIT TOMORROW
-        # self.set_speeds(self.max_speed * v)
-
-        # self.get_logger().info(f'setting speeds to {self.max_speed * v}')
-
 
     def update(self):
         now = self.get_clock().now()
         dt = (now - self.prev_time).nanoseconds * 1e-9
         time_from_teleop = now - self.last_teleop_msg_time
+        # self.get_logger().info(f'last time from teleop: {time_from_teleop}')
         
         # self.get_logger().info("logging")
         self._update_pos(dt)
@@ -465,25 +455,25 @@ class DroneController(Node):
         self._step_goto(dt)
         self._step_yaw(dt)      # must run AFTER _update_pos, which resets orientation
 
-        if time_from_teleop > self.teleop_timeout or self.should_hover:
-            if self.pos_desired is None and not self.taking_off:
-                self.get_logger().warn(f'recording current pos: {self.pos}')
-                self.pos_desired = self.pos.copy()
-            # self.get_logger().warn(f'drone {self.drone_name} hovering.')
-            
-            commanded_vel = np.array(self.vel_desired, dtype=float)
-            if not self.real and self.pos_desired is not None:
-                commanded_vel = np.array([0.0, 0.0, 0.0])
-                self.movement_msg.pose.position.x = self.pos_desired[X_DIR]
-                self.movement_msg.pose.position.y = self.pos_desired[Y_DIR]
-                self.movement_msg.pose.position.z = self.pos_desired[Z_DIR]
+        # if self.should_hover: self.set_speeds(np.array(0.0,0.0,0.0))
+        commanded_vel = np.array(self.vel_desired, dtype=float)
 
+        if time_from_teleop > self.teleop_timeout:
+            # self.get_logger().info(f'right area')
+            if self.should_hover:
+                commanded_vel = np.array(0.0,0.0,0.0)
+                if self.pos_desired is None and not self.taking_off:
+                    self.get_logger().warn(f'recording current pos: {self.pos}')
+                    self.pos_desired = self.pos.copy()
+                    self.get_logger().warn(f'drone {self.drone_name} hovering.')
+            
             self.set_speeds(commanded_vel)
         else:
             # Teleop has taken over - drop any in-progress GoTo with it.
             self.pos_desired = None
             self.goto_target = None
             self.goto_wait = None
+            # self.get_logger().info(f'wrong area')
 
         if not self.tf_ready:
             self.get_logger().warn("No tf ready, exiting update loop")
@@ -511,7 +501,7 @@ class DroneController(Node):
             self.movement_pub.publish(velocity_msg)
         else:
             self.movement_pub.publish(self.movement_msg)
-            self.get_logger().info(f'sim: speeds = {self.movement_msg.twist.linear.x}, {self.movement_msg.twist.linear.y}, {self.movement_msg.twist.linear.z}')
+            # self.get_logger().info(f'sim: speeds = {self.movement_msg.twist.linear.x}, {self.movement_msg.twist.linear.y}, {self.movement_msg.twist.linear.z}')
 
         self.prev_time = now
         self.prev_pos = self.pos.copy()
@@ -519,13 +509,15 @@ class DroneController(Node):
     def set_speeds(self, lin_speeds, ang_speeds=None):
         self.movement_msg.twist.linear.x = lin_speeds[X_DIR]
         self.movement_msg.twist.linear.y = lin_speeds[Y_DIR]
-        hover_bias = self.hover_speed if self.real else 0.0
+        hover_bias = self.hover_speed if not self.real else 0.0
         self.movement_msg.twist.linear.z = lin_speeds[Z_DIR] + hover_bias
 
         if not ang_speeds == None:
             self.movement_msg.twist.angular.x = ang_speeds[ROLL]
             self.movement_msg.twist.angular.y = ang_speeds[PITCH]
             self.movement_msg.twist.angular.z = ang_speeds[YAW]
+
+        # self.get_logger().info(f'settings speeds to {self.movement_msg.twist}')
 
     def _verify_tf_available(self):
         if not self.tf_buffer.can_transform('mocap', self.drone_name, rclpy.time.Time()): 

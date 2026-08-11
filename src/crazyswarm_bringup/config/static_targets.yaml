@@ -1,0 +1,43 @@
+# Static (non-flying) targets for the sim.
+#
+# These replace the cf01/cf02/cf03 "target drones" without touching
+# crazyflies.yaml: nothing here is simulated or armed, the
+# static_target_server just broadcasts a TF frame per target. The RAN server
+# discovers targets by TF lookup (mocap -> <name>, see
+# spherical_RAN_server_lloyd._get_targets_from_tf), so a plain frame is
+# indistinguishable from a real drone as far as the model is concerned.
+#
+# Positions below are exactly where the target drones end up *after takeoff*:
+# initial_position from crazyflies.yaml, with z = launch_height (0.5) +
+# delta_z. If you change launch_height in sim_drone.launch.py, update z here
+# too -- these are absolute positions in `frame`, not offsets.
+#
+# The icosahedral 3-fold placement is unchanged: 1.286 m from cf09 at the
+# origin, 66 deg pairwise separation.
+
+frame: mocap
+
+static_targets:
+  target01:
+    enabled: true
+    position: [0.933621, 0.356611, 2.117606]   # was cf01 (delta_z 1.617606)
+    quality: 20.0
+    draggable: true
+    color: [1.0, 0.35, 0.1, 0.9]   # r, g, b, a
+    scale: 0.12                     # sphere diameter [m]
+
+  target02:
+    enabled: true
+    position: [1.183710, -0.298131, 0.903647]  # was cf02 (delta_z 0.403647)
+    quality: 20.0
+    draggable: true
+    color: [0.1, 0.8, 0.35, 0.9]
+    scale: 0.12
+
+  target03:
+    enabled: true
+    position: [0.683532, 1.011354, 0.903647]   # was cf03 (delta_z 0.403647)
+    quality: 20.0
+    draggable: true
+    color: [0.2, 0.45, 1.0, 0.9]
+    scale: 0.12

@@ -110,7 +110,10 @@ class SphericalRANServerLloyd(Node):
             raise RuntimeError(f'kernel cache unusable: {e}') from e
 
         self.targets = []
-        self.drone_world_pos = np.zeros(3)
+        # None until tf answers. Starting this at the origin drew the whole
+        # visualization on the floor at (0,0,0) for as long as the drone's
+        # transform took to show up -- every tf lookup below fails quietly.
+        self.drone_world_pos = None
 
         self.heading_pub = self.create_publisher(Vector3, f'{self.drone_name}/desired_heading', 10)
         # rviz's MarkerArray display for this topic (crazyswarm_bringup/rviz/3_targets.rviz)
@@ -193,7 +196,8 @@ class SphericalRANServerLloyd(Node):
         # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | r={r:.3f}')
 
 
-        self._display_ran_rviz(self.nodes, self.z, vec)
+        if self.drone_world_pos is not None:
+            self._display_ran_rviz(self.nodes, self.z, vec)
 
 
         self.prev_time = now

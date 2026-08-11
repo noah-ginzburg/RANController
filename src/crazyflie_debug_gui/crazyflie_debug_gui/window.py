@@ -431,15 +431,17 @@ class DroneWindow(QWidget):
     TAKEOFF_MAX_GROUND_HEIGHT = 0.1  # m
 
     def _current_position(self):
-        """Vicon truth if we have it, else the drone's own estimate."""
+        """Vicon truth if we have it, else the drone's own estimate, else TF."""
         if self.node is None:
             return None
-        return self.node.vicon_position() or self.node.estimated_position()
+        return (self.node.vicon_position() or self.node.estimated_position()
+                or self.node.tf_position())
 
     def _current_yaw_deg(self):
         if self.node is None:
             return None
-        rpy = self.node.vicon_rpy() or self.node.estimated_rpy()
+        rpy = (self.node.vicon_rpy() or self.node.estimated_rpy()
+               or self.node.tf_rpy())
         return None if rpy is None else rpy[2]
 
     def on_takeoff(self):

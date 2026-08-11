@@ -11,6 +11,8 @@ The GUI reads these methods; it never touches ROS.
 import math
 import time
 
+import rclpy
+import tf2_ros
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
 
@@ -94,7 +96,7 @@ class TelemetryModel(Node):
         # drone and no mocap. Commands are still published for real, because the
         # controller server validates them against ITS OWN tf - so a fake
         # altitude here can't talk a real drone into taking off.
-        self.declare_parameter('fake_data', False)
+        self.declare_parameter('fake_data', True)
         self.drone_name = self.get_parameter('drone_name').value
         self.fake_data = self.get_parameter('fake_data').value
 
@@ -137,6 +139,12 @@ class TelemetryModel(Node):
                 PoseStamped, f'/{self.drone_name}/pose', self.on_pose, qos)
             self.create_subscription(
                 NamedPoseArray, '/poses', self.on_vicon_poses, poses_qos)
+
+        # Last-resort pose source. crazyflie_sim publishes neither /<name>/pose
+        # nor /poses -- its only output is TF -- so in sim both readouts above
+        # are permanently None and this is the one that answers.
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Commands out. RELIABLE with a little depth: a dropped takeoff is bad,
         # a dropped ESTOP is unacceptable, and these are rare human-paced events
@@ -338,6 +346,27 @@ class TelemetryModel(Node):
         if pose is None or not _quat_is_valid(pose.orientation):
             return None
         r, p, y = _quat_to_rpy(pose.orientation)
+        return (math.degrees(r), math.degrees(p), math.degrees(y))
+
+    def _tf_transform(self):
+        """The mocap -> <drone> transform, or None if it isn't being published."""
+        try:
+            return self.tf_buffer.lookup_transform(
+                'mocap', self.drone_name, rclpy.time.Time()).transform
+        except tf2_ros.TransformException:
+            return None
+
+    def tf_position(self):
+        """(x, y, z) from TF, or None. In sim this is the only pose there is."""
+        t = self._tf_transform()
+        return None if t is None else (t.translation.x, t.translation.y, t.translation.z)
+
+    def tf_rpy(self):
+        """(roll, pitch, yaw) degrees from TF, or None."""
+        t = self._tf_transform()
+        if t is None or not _quat_is_valid(t.rotation):
+            return None
+        r, p, y = _quat_to_rpy(t.rotation)
         return (math.degrees(r), math.degrees(p), math.degrees(y))
 
     def position_error_m(self):
