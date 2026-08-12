@@ -14,10 +14,12 @@ depends on a working matplotlib GUI backend; pass --show to also open windows.
 
     ros2 run flight_analysis flight_data
     ros2 run flight_analysis flight_data ~/biodrone/bags/flight_20260723_164231
-    ros2 run flight_analysis flight_data --csv
+    ros2 run flight_analysis flight_data --dump
+    ros2 run flight_analysis flight_data --dump --topics /cf09/motor_pwm
 """
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -27,6 +29,7 @@ import numpy as np
 import pandas as pd
 import rosbag2_py
 from rclpy.serialization import deserialize_message
+from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.utilities import get_message
 
 BAGS_DIR = Path.home() / "biodrone" / "bags"
@@ -82,8 +85,9 @@ def newest_bag(bags_dir: Path = BAGS_DIR):
             continue  # unreadable/corrupt metadata -- not a candidate
         (dated if count else empty).append((start_ns, p))
     if not dated:
-        sys.exit(f"no non-empty bags found under {bags_dir} "
-                 f"({len(empty)} empty bag(s) there recorded nothing at all)")
+        sys.exit(f"no usable bags under {bags_dir}"
+                 + (f" -- all {len(empty)} bag(s) there recorded 0 messages"
+                    if empty else " (no bag folders found at all)"))
     chosen = max(dated)[1]
     # Empty bags carry no usable start time, so order them by name -- which is
     # a recording timestamp under the launch file's flight_%Y%m%d_%H%M%S.
@@ -165,6 +169,63 @@ def read_topic(bag_dir: Path, topic: str) -> pd.DataFrame:
         row.update({f: getattr(msg, f) for f in msg.get_fields_and_field_types()})
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def topic_filename(bag_dir: Path, topic: str, ext: str) -> str:
+    """`/cf09/est` in bag `flight_X` -> `flight_X_cf09_est.<ext>`."""
+    return f"{bag_dir.name}_{topic.strip('/').replace('/', '_')}.{ext}"
+
+
+def read_all(bag_dir: Path, topics=None) -> dict:
+    """Every message of every (selected) topic, as plain nested dicts.
+
+    One pass over the bag rather than one per topic, and each record carries
+    `t_ns` (the bag's own recv time) as its first key. Message contents come
+    from message_to_ordereddict, so nested types survive intact -- which is the
+    point of dumping to JSON rather than flattening to a table.
+    """
+    types = topic_types(bag_dir)
+    if topics:
+        unknown = sorted(set(topics) - set(types))
+        if unknown:
+            sys.exit(f"not in this bag: {', '.join(unknown)}")
+    wanted = [t for t in types if not topics or t in topics]
+    classes = {t: get_message(types[t]) for t in wanted}
+    out = {t: [] for t in wanted}
+
+    reader = open_reader(bag_dir)
+    reader.set_filter(rosbag2_py.StorageFilter(topics=wanted))
+    while reader.has_next():
+        topic, data, t_ns = reader.read_next()
+        rec = {"t_ns": t_ns}
+        rec.update(message_to_ordereddict(deserialize_message(data, classes[topic])))
+        # LogDataGeneric's `values` is a bare array whose meaning lives in the
+        # log block's `vars`, not in the message. Name the entries so a dump of
+        # /<drone>/est is readable without cross-referencing crazyflies.yaml.
+        if topic.endswith("/est") and isinstance(rec.get("values"), (list, tuple)):
+            rec.update(dict(zip(EST_VARS, rec["values"])))
+        out[topic].append(rec)
+    return out
+
+
+def dump(bag_dir: Path, out_dir: Path, fmt: str, topics=None) -> None:
+    """Write every selected topic to out_dir, one file per topic."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data = read_all(bag_dir, topics)
+    for topic, records in data.items():
+        if not records:
+            print(f"  skipped {topic} (0 messages)")
+            continue
+        out = out_dir / topic_filename(bag_dir, topic, fmt)
+        if fmt == "json":
+            # default=list catches array.array / numpy fields, which json
+            # cannot encode on its own.
+            out.write_text(json.dumps(records, indent=2, default=list))
+        else:
+            # Nested fields become dotted columns (header.stamp.sec, ...);
+            # arrays stay as one cell, which is why JSON is the better dump.
+            pd.json_normalize(records).to_csv(out, index=False)
+        print(f"  wrote {out}  ({len(records)} messages)")
 
 
 def named_est(est: pd.DataFrame) -> pd.DataFrame:
@@ -257,11 +318,24 @@ def main():
     ap.add_argument("--bags-dir", metavar="DIR", default=str(BAGS_DIR),
                     help=f"where to look for the newest bag (default: {BAGS_DIR})")
     ap.add_argument("--drone", help="drone name (default: inferred from the bag)")
-    ap.add_argument("--csv", nargs="?", const="", metavar="DIR",
-                    help="also write the raw rows as CSVs (default: into the "
-                         "bag folder; pass DIR to put them elsewhere)")
+    dump_group = ap.add_mutually_exclusive_group()
+    dump_group.add_argument("--dump", dest="dump", action="store_true",
+                            help="write the full debug dump: every topic, "
+                                 "every message, one file per topic")
+    dump_group.add_argument("--no-dump", dest="dump", action="store_false",
+                            help="skip the dump (the default)")
+    ap.set_defaults(dump=False)
+    ap.add_argument("--dump-format", choices=("json", "csv", "both"),
+                    default="json",
+                    help="dump format (default: json). CSV flattens nested "
+                         "fields to dotted columns and puts arrays in a single "
+                         "cell, so prefer json for anything but plain numeric "
+                         "topics")
+    ap.add_argument("--topics", nargs="+", metavar="TOPIC",
+                    help="restrict the dump to these topics (default: all)")
     ap.add_argument("--out", metavar="DIR",
-                    help="where to save the figures (default: the bag folder)")
+                    help="where every generated file goes -- figures and dump "
+                         "alike (default: the bag folder, alongside the .db3)")
     ap.add_argument("--show", action="store_true",
                     help="also open the figures in a window; off by default "
                          "because the saved PNGs don't depend on a working "
@@ -318,17 +392,20 @@ def main():
         print("EMPTY -- nothing recorded on this topic" if df.empty
               else df.head(args.rows).to_string(index=False))
 
-    # Everything generated is named after the bag, so a shared output
-    # directory stays unambiguous and re-running just overwrites in place.
-    if args.csv is not None:
-        csv_dir = Path(args.csv).expanduser() if args.csv else bag_dir
-        csv_dir.mkdir(parents=True, exist_ok=True)
-        for name, df in ((vicon_topic, vicon), (est_topic, est)):
-            if df.empty:
-                continue
-            out = csv_dir / f"{bag_dir.name}_{name.strip('/').replace('/', '_')}.csv"
-            df.to_csv(out, index=False)
-            print(f"\nwrote {out}")
+    # One output location for everything -- dump and figures land together in
+    # the bag folder unless --out moves them, so a flight's artefacts never end
+    # up split across two places. Names are bag-prefixed, so even a shared
+    # --out directory stays unambiguous and re-running overwrites in place.
+    out_dir = Path(args.out).expanduser() if args.out else bag_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.dump:
+        formats = ("json", "csv") if args.dump_format == "both" else (args.dump_format,)
+        for fmt in formats:
+            print(f"\n=== {fmt} dump ===")
+            dump(bag_dir, out_dir, fmt, args.topics)
+    elif args.topics or args.dump_format != "json":
+        print("\nnote: --topics/--dump-format do nothing without --dump")
 
     if vicon.empty or est.empty:
         sys.exit(f"\ncannot compare: need messages on both {vicon_topic} "
@@ -340,8 +417,6 @@ def main():
         "error": plot_difference(tv, vicon_xyz, te, est_xyz, drone),
     }
 
-    out_dir = Path(args.out).expanduser() if args.out else bag_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
     print()
     for kind, fig in figs.items():
         out = out_dir / f"{bag_dir.name}_{kind}.png"
