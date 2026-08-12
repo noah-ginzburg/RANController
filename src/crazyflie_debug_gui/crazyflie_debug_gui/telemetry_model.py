@@ -96,7 +96,7 @@ class TelemetryModel(Node):
         # drone and no mocap. Commands are still published for real, because the
         # controller server validates them against ITS OWN tf - so a fake
         # altitude here can't talk a real drone into taking off.
-        self.declare_parameter('fake_data', True)
+        self.declare_parameter('fake_data', False)
         self.drone_name = self.get_parameter('drone_name').value
         self.fake_data = self.get_parameter('fake_data').value
 

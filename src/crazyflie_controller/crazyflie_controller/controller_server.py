@@ -580,8 +580,8 @@ def main(args=None):
             drone_controller.get_logger().info('Arm skipped (no arm service); continuing to takeoff.')
 
     target_height = drone_controller.launch_height + drone_controller.delta_z
-    response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=target_height, duration=drone_controller.LAUNCH_DURATION)
-    # response = None
+    # response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=target_height, duration=drone_controller.LAUNCH_DURATION)
+    response = None
 
     if response is not None:
         drone_controller.get_logger().info('Takeoff command executed successfully')
