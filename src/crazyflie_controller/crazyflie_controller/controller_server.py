@@ -24,8 +24,16 @@ Z_DIR = YAW = 2
 class DroneController(Node):
     UPDATE_RATE = 50.0  #hz
     GROUP_MASK = 0  #0 = all drones
-    LAUNCH_DURATION = Duration(sec=2, nanosec=0)   #Time to reach the desired height
+    LAUNCH_DURATION = Duration(sec=5, nanosec=0)   #Time to reach the desired height
     LAND_DURATION = Duration(sec=5, nanosec=0)   #Time to land
+    # ABSOLUTE target altitude for Land, not a descent distance -- crazyswarm2
+    # forwards it to cflib high_level_commander.land(absolute_height_m, ...).
+    # 0.0 = the floor. Never make this negative: it aims the planner underground.
+    LAND_HEIGHT = 0.0
+    # Below this altitude a land is refused in favour of cutting the motors: a
+    # Land activates the high-level commander, which spins the props up to fly a
+    # descent the drone does not need when it is already on the ground.
+    LAND_MIN_HEIGHT = 0.5
     GOTO_DURATION = Duration(sec=5, nanosec=0)   #time for GOTO
 
 
@@ -110,6 +118,15 @@ class DroneController(Node):
         self.should_hover = False
         self.should_land = False
         self.taking_off = True
+        # Has a takeoff actually been COMMANDED? update() refuses to publish any
+        # setpoint until this is True. Without it, taking_off is only ever
+        # cleared by _verify_launch_completed(), which is a pure height check --
+        # so picking the drone up above launch_height - 0.1 looked like a
+        # finished takeoff and started the 50 Hz setpoint stream in your hands.
+        # The firmware auto-arms (supervisor.c AUTO_ARMING, set unless
+        # CONFIG_MOTORS_REQUIRE_ARMING), so an arm(False) at startup does NOT
+        # make that safe -- this flag is the actual interlock.
+        self.launch_requested = False
         self.tf_ready = False
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -136,6 +153,7 @@ class DroneController(Node):
         return self.future.result()
 
     def send_takeoff_req(self, group_mask, height, duration):
+        self.launch_requested = True
         req = Takeoff.Request()
         req.group_mask = group_mask
         req.height = height
@@ -207,6 +225,10 @@ class DroneController(Node):
             if dist <= self.GOTO_REACHED_M:
                 self.get_logger().info(
                     f'GoTo: reached target (within {dist:.3f} m); resuming control.')
+                # Bookkeeping only on the real path: nothing consumes
+                # pos_desired there (see _record_hover_setpoint). What actually
+                # holds the drone at the target after a real GoTo is the
+                # onboard high-level commander, not this value.
                 self.pos_desired = self.goto_wait.copy()
                 self.goto_wait = None
                 self.goto_wait_deadline = None
@@ -256,6 +278,27 @@ class DroneController(Node):
         self.movement_msg.pose.orientation.z = float(np.sin(self.yaw_desired / 2.0))
         self.movement_msg.pose.orientation.w = float(np.cos(self.yaw_desired / 2.0))
 
+    def _record_hover_setpoint(self):
+        """SIM ONLY. Latch the current position as the hover setpoint.
+
+        Gated to sim because pos_desired only means something there. On the
+        real drone update() publishes VelocityWorld, which puts the firmware in
+        modeVelocity -- and position_controller_pid.c runs its position PID
+        only `if (setpoint->mode.x == modeAbs)`, so the onboard position loop
+        is bypassed entirely and no position setpoint we compute here can reach
+        it. Latching one on the real path was pure bookkeeping: it read like a
+        hover was being commanded when the drone was actually being told
+        "hold zero velocity", which has no position feedback at all and lets
+        the drone integrate away (bags/flight_20260813_143119 and _143207:
+        divergence starts within 200 ms of this stream taking over).
+        """
+        if self.real:
+            return
+        if self.pos_desired is None and not self.taking_off:
+            self.pos_desired = self.pos.copy()
+            self.get_logger().warn(
+                f'drone {self.drone_name} hovering at {self.pos_desired}.')
+
     def _step_goto(self, dt):
         """Walk pos_desired toward goto_target at GOTO_SPEED."""
         if self.goto_target is None or dt <= 0.0:
@@ -296,6 +339,7 @@ class DroneController(Node):
                 f'EMERGENCY STOP from debug GUI - cutting motors on {self.drone_name}.')
             self.should_land = True
             self.taking_off = False
+            self.launch_requested = False
             self.goto_target = None
             self.goto_wait = None
             self.emergency_cli.call_async(Empty.Request())
@@ -326,6 +370,7 @@ class DroneController(Node):
             f'Takeoff from debug GUI: z={z:.3f} m -> {height:.3f} m')
 
         self.taking_off = True
+        self.launch_requested = True
         self.should_land = False
         self.pos_desired = None
 
@@ -339,24 +384,33 @@ class DroneController(Node):
         self.get_logger().info(f'Land from debug GUI ({self.drone_name}).')
         self.should_land = True
         self.taking_off = False
+        # Back on the ground (or on the way there): a new takeoff must be
+        # commanded before anything may stream setpoints again.
+        self.launch_requested = False
         self.goto_target = None      # abandon any in-progress GoTo
         self.goto_wait = None
 
-        # height is the descent distance to travel, so negative current altitude
-        # brings it to the floor (same convention as the Ctrl+C path in main()).
-        land_height = -float(self.pos[Z_DIR]) if self.tf_ready else 0.0
-        if np.isnan(land_height):
-            land_height = 0.0
-
+        # Land.height is an ABSOLUTE target altitude, not a descent distance:
+        # crazyswarm2 hands it straight to cflib's
+        # high_level_commander.land(absolute_height_m, ...). The old
+        # -self.pos[Z_DIR] therefore aimed the planner BELOW the floor (at z=1.2
+        # it commanded -1.2 m), so the descent ramp never levelled off at the
+        # ground -- it drove the setpoint underground and the controller kept
+        # pushing down into the floor. Ground is 0.0, full stop; this also drops
+        # the old NaN/stale-TF hazard, since the value no longer depends on pos.
         req = Land.Request()
         req.group_mask = self.GROUP_MASK
-        req.height = land_height
+        req.height = self.LAND_HEIGHT
         req.duration = self.LAND_DURATION
         self.land_cli.call_async(req)
 
     def _debug_goto(self, msg: DebugFlags):
         self.taking_off = False
         self.should_land = False
+        # An explicit GoTo is a flight command like takeoff, so it authorises the
+        # setpoint stream too -- otherwise update() would go quiet on arrival and
+        # leave the drone parked on the high-level commander.
+        self.launch_requested = True
 
         if not self.real:
             # SIM: the high-level go_to service is unusable here. Streaming
@@ -455,18 +509,17 @@ class DroneController(Node):
         self._step_goto(dt)
         self._step_yaw(dt)      # must run AFTER _update_pos, which resets orientation
 
-        # if self.should_hover: self.set_speeds(np.array(0.0,0.0,0.0))
         commanded_vel = np.array(self.vel_desired, dtype=float)
 
         if time_from_teleop > self.teleop_timeout:
-            # self.get_logger().info(f'right area')
             if self.should_hover:
-                commanded_vel = np.array(0.0,0.0,0.0)
-                if self.pos_desired is None and not self.taking_off:
-                    self.get_logger().warn(f'recording current pos: {self.pos}')
-                    self.pos_desired = self.pos.copy()
-                    self.get_logger().warn(f'drone {self.drone_name} hovering.')
-            
+                # np.array(0.0, 0.0, 0.0) was a TypeError waiting to happen -
+                # numpy reads the 2nd positional as dtype. should_hover is set
+                # from a TF dropout, so the first tracking hiccup would have
+                # raised inside the timer callback and taken the node down.
+                commanded_vel = np.zeros(3)
+                self._record_hover_setpoint()
+
             self.set_speeds(commanded_vel)
         else:
             # Teleop has taken over - drop any in-progress GoTo with it.
@@ -477,16 +530,38 @@ class DroneController(Node):
 
         if not self.tf_ready:
             self.get_logger().warn("No tf ready, exiting update loop")
+            self.prev_time = now
+            self.prev_pos = self.pos.copy()
+            return
+
+        # Hard interlock: no commanded takeoff, no setpoints. Handling the drone
+        # must never be enough to start the stream.
+        if not self.launch_requested:
+            self.prev_time = now
+            self.prev_pos = self.pos.copy()
             return
 
         if self.taking_off:
             if self._verify_launch_completed():
                 self.taking_off = False
-                self.pos_desired = self.pos.copy()
-                self.pos_desired[Z_DIR] = self.launch_height + self.delta_z
+                if not self.real:
+                    # SIM ONLY - see _record_hover_setpoint(). On the real path
+                    # this setpoint had no consumer: the VelocityWorld stream
+                    # below cannot express it.
+                    self.pos_desired = self.pos.copy()
+                    self.pos_desired[Z_DIR] = self.launch_height + self.delta_z
             else:
+                # prev_* must advance here too, otherwise dt grows without bound
+                # while we climb and self.vel = (pos - prev_pos)/dt collapses to
+                # ~0 -- which silently defeated the vel[Z] <= 0.1 half of
+                # _verify_launch_completed().
+                self.prev_time = now
+                self.prev_pos = self.pos.copy()
                 return
-        if self.should_land: return
+        if self.should_land:
+            self.prev_time = now
+            self.prev_pos = self.pos.copy()
+            return
 
         self.movement_msg.header.stamp = self.get_clock().now().to_msg()
         self.movement_msg.header.frame_id = self.drone_name
@@ -597,14 +672,40 @@ def main(args=None):
         # and drops the drone). Emergency is reserved for a second Ctrl+C below.
         drone_controller.get_logger().info(f'User hit Ctrl+C. Attempting to land drone {drone_controller.drone_name}.')
         drone_controller.should_land = True
+        drone_controller.launch_requested = False
         try:
-            # Land height is the descent distance to travel: negative current
-            # altitude so the drone is commanded down to the floor. NOTE: pos[Z]
-            # comes from the cf01 TF and can go NaN/stale on tracking loss.
-            land_height = -drone_controller.pos[Z_DIR]
-            land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=land_height, duration=drone_controller.LAND_DURATION)
-            drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land (height={land_height}).')
-            if land_resp is not None: time.sleep(drone_controller.LAND_DURATION.sec)
+            # Land-vs-ESTOP is decided on the drone's ACTUAL altitude. This used
+            # to test abs(-pos[Z_DIR]), i.e. the land target, which no longer
+            # carries any altitude information now that the target is a fixed
+            # absolute 0.0 -- so the test has to read z directly.
+            #
+            # A stale/NaN z is treated as NOT airborne: silence is not evidence
+            # of being in the air, and a land we cannot justify spins the motors.
+            z = float(drone_controller.pos[Z_DIR])
+            airborne = (drone_controller.tf_ready and not np.isnan(z)
+                        and z > drone_controller.LAND_MIN_HEIGHT)
+
+            if airborne:
+                # height is ABSOLUTE (LAND_HEIGHT == floor), not a descent distance.
+                land_height = drone_controller.LAND_HEIGHT
+                land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=land_height, duration=drone_controller.LAND_DURATION)
+                drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land from z={z:.3f} m to height={land_height}.')
+                if land_resp is not None: time.sleep(drone_controller.LAND_DURATION.sec)
+            else:
+                # NOTE: this branch previously called self.get_logger() -- but
+                # there is no `self` in main(), so it raised NameError before
+                # ever reaching send_emergency_req(). The ESTOP never fired, and
+                # the NameError escaped main() entirely (the enclosing except
+                # only catches KeyboardInterrupt), skipping destroy_node() and
+                # rclpy.shutdown() and leaving the drone armed.
+                drone_controller.get_logger().info(
+                    f'Drone {drone_controller.drone_name} at z={z:.3f} m '
+                    f'(tf_ready={drone_controller.tf_ready}) is below the '
+                    f'{drone_controller.LAND_MIN_HEIGHT:.2f} m land threshold; requesting ESTOP.')
+                try:
+                    drone_controller.send_emergency_req()
+                except Exception as e:
+                    drone_controller.get_logger().error(f'Emergency stop call failed: {e}')
         except KeyboardInterrupt:
             drone_controller.get_logger().fatal(
                 f'User hit Ctrl+C again. EMERGENCY STOP — cutting motors on {drone_controller.drone_name}.')

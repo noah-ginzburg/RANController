@@ -10,6 +10,7 @@ The GUI reads these methods; it never touches ROS.
 
 import math
 import time
+from collections import deque
 
 import rclpy
 import tf2_ros
@@ -21,9 +22,37 @@ from crazyflie_debug_interfaces.msg import DebugFlags
 from geometry_msgs.msg import PoseStamped
 from motion_capture_tracking_interfaces.msg import NamedPoseArray
 
+# The RAW Vicon stream, upstream of vicon_bridge. Optional on purpose: in sim
+# (and when running the GUI against a workspace without the mocap packages
+# built) this package does not exist, and a hard import would take the whole
+# GUI down over a pane that would have read '--' anyway.
+try:
+    from vicon_receiver.msg import Position as ViconPosition
+except ImportError:
+    ViconPosition = None
+
 
 # A value older than this is treated as "no data" rather than shown stale.
 STALE_AFTER_SEC = 2.0
+
+# Vicon capture rate. Used only to turn "frames per second we actually see"
+# into a percentage of nominal; the number itself comes from the Vicon system
+# config (and matches the 100 Hz deadline vicon_bridge puts on /poses).
+VICON_NOMINAL_HZ = 100.0
+
+# Drop/occlusion counts are reported over a trailing window as well as for the
+# whole session. A session total answers "has this rig been healthy?", the
+# window answers "is it happening RIGHT NOW", and only the second one tells you
+# whether to keep flying.
+#
+# Drops get the shorter window: the loss threshold is a fixed 25 frames (0.25 s
+# of blind time), so a tighter window means that much loss has to arrive as a
+# BURST to trip it, instead of accumulating from the scattered single frames a
+# healthy feed drops all day. Occlusions keep the longer one - a healthy feed
+# has none at all, so there is nothing to average out and a longer memory just
+# means a brief marker dropout stays on screen long enough to be read.
+VICON_DROP_WINDOW_SEC = 3.0
+VICON_OCCLUSION_WINDOW_SEC = 5.0
 
 # Motor PWM is a 16-bit value: 0..65535. At 65535 the mixer has no headroom
 # left, so the controller can no longer correct attitude - that is the ceiling
@@ -80,6 +109,40 @@ def _pct(value, full_scale):
     return max(0.0, min(100.0, 100.0 * value / full_scale))
 
 
+def _vicon_raw_tuple(msg):
+    """The pose fields only - what vicon_bridge compares to spot a frozen frame."""
+    return (msg.x_trans, msg.y_trans, msg.z_trans,
+            msg.x_rot, msg.y_rot, msg.z_rot, msg.w)
+
+
+def vicon_frame_fault(msg, last_raw):
+    """Why vicon_bridge would throw this frame away, or None if it is good.
+
+    This mirrors the four rejection tests in vicon_bridge.vicon_callback().
+    That node is the authority - it is the one whose decision actually starves
+    the drone - and this is a read-only copy so the GUI can COUNT the frames it
+    discards. Keep the two in sync: a test here that the bridge does not make
+    would report occlusions the drone never suffered, and a missing one would
+    hide real ones.
+
+    Why these count as "occluded": the vicon_receiver C++ side never reads the
+    SDK's Occluded flag (see communicator.cpp get_frame()), so a lost rigid body
+    does not go quiet - it arrives as zeros, as a broken quaternion, or as the
+    previous pose re-served bit-identically. Those malformed frames ARE the
+    occlusion signal, and each one is a frame the drone's estimator went without.
+    """
+    quat = (msg.x_rot, msg.y_rot, msg.z_rot, msg.w)
+    if any(math.isnan(v) for v in quat):
+        return 'NaN quaternion'
+    if abs(math.sqrt(sum(v * v for v in quat)) - 1.0) > 0.1:
+        return 'non-unit quaternion'
+    if msg.x_trans == 0.0 and msg.y_trans == 0.0 and msg.z_trans == 0.0:
+        return 'zero (0,0,0) pose'
+    if last_raw is not None and last_raw == _vicon_raw_tuple(msg):
+        return 'frozen frame'
+    return None
+
+
 class TelemetryModel(Node):
 
     def __init__(self, drone_name=None, **kwargs):
@@ -124,6 +187,22 @@ class TelemetryModel(Node):
         self.vicon_poses = None      # motion_capture_tracking_interfaces/NamedPoseArray
         self.vicon_poses_time = None
 
+        # --- raw Vicon link health -------------------------------------
+        # /poses only carries frames that SURVIVED vicon_bridge, so it can tell
+        # us the feed is dead but never why. These come off the raw topic that
+        # feeds the bridge, which is where the losses are visible.
+        self.vicon_raw_time = None      # last raw frame arrival (monotonic)
+        self._vicon_frame_number = None  # last frame_number seen
+        self._vicon_last_raw = None      # last GOOD pose tuple, for the frozen test
+        self._vicon_dropped_total = 0    # frames Vicon numbered that never arrived
+        self._vicon_occluded_total = 0   # frames that arrived unusable
+        self._vicon_drops = deque()          # (time, count) inside the window
+        self._vicon_occlusions = deque()     # (time, reason) inside the window
+        # 400 = 4 s at the nominal 100 Hz, enough to measure rate over 1 s even
+        # if the GUI thread stalls for a moment.
+        self._vicon_arrivals = deque(maxlen=400)
+        self._vicon_last_fault = None    # (reason, time) - most recent bad frame
+
         if self.fake_data:
             self.get_logger().warn(
                 'fake_data:=true - telemetry is SYNTHETIC. Commands are still '
@@ -139,6 +218,25 @@ class TelemetryModel(Node):
                 PoseStamped, f'/{self.drone_name}/pose', self.on_pose, qos)
             self.create_subscription(
                 NamedPoseArray, '/poses', self.on_vicon_poses, poses_qos)
+            if ViconPosition is not None:
+                # Raw frames, one per Vicon capture. Deep queue and RELIABLE on
+                # purpose: with depth=1 the middleware would discard frames the
+                # GUI was too slow to collect, and those self-inflicted losses
+                # would be indistinguishable from real ones in the drop count.
+                # The publisher (vicon_receiver) is RELIABLE depth 10.
+                raw_qos = QoSProfile(depth=100,
+                                     history=HistoryPolicy.KEEP_LAST,
+                                     reliability=ReliabilityPolicy.RELIABLE)
+                # Subject and segment are both the drone name - the same topic
+                # vicon_bridge subscribes to.
+                self.create_subscription(
+                    ViconPosition,
+                    f'/vicon/{self.drone_name}/{self.drone_name}',
+                    self.on_vicon_raw, raw_qos)
+            else:
+                self.get_logger().warn(
+                    'vicon_receiver package not found - dropped/occluded frame '
+                    'counts will read "n/a". Everything else is unaffected.')
 
         # Last-resort pose source. crazyflie_sim publishes neither /<name>/pose
         # nor /poses -- its only output is TF -- so in sim both readouts above
@@ -171,6 +269,43 @@ class TelemetryModel(Node):
     def on_vicon_poses(self, msg):
         self.vicon_poses = msg
         self.vicon_poses_time = time.monotonic()
+
+    def on_vicon_raw(self, msg):
+        """One raw Vicon frame. Counts what was lost, then what was unusable.
+
+        These are two different failures and the fix differs: dropped frames
+        never reached this machine (network, receiver, or Vicon itself), while
+        occluded frames arrived and had to be thrown away (markers not seen).
+        """
+        now = time.monotonic()
+        self.vicon_raw_time = now
+        self._vicon_arrivals.append(now)
+
+        # Vicon numbers every frame it captures, so a jump of more than one
+        # means frames were captured and never got here.
+        if self._vicon_frame_number is not None:
+            gap = msg.frame_number - self._vicon_frame_number - 1
+            if gap > 0:
+                self._vicon_dropped_total += gap
+                self._vicon_drops.append((now, gap))
+            # gap < 0 means the counter went backwards: Vicon Tracker was
+            # restarted, not a time-travelling frame. Resync silently rather
+            # than logging a negative drop.
+        self._vicon_frame_number = msg.frame_number
+
+        fault = vicon_frame_fault(msg, self._vicon_last_raw)
+        if fault is None:
+            self._vicon_last_raw = _vicon_raw_tuple(msg)
+        else:
+            self._vicon_occluded_total += 1
+            self._vicon_occlusions.append((now, fault))
+            self._vicon_last_fault = (fault, now)
+
+    @staticmethod
+    def _prune(events, now, window):
+        """Drop events that have aged out of the trailing window."""
+        while events and (now - events[0][0]) > window:
+            events.popleft()
 
     # ------------------------------------------------------------------
     # Fake source. It builds real message objects and feeds them through the
@@ -224,6 +359,51 @@ class TelemetryModel(Node):
         array.poses = [named]
         self.on_vicon_poses(array)
 
+        self._tick_fake_vicon_raw(t)
+
+    def _tick_fake_vicon_raw(self, t):
+        """Synthetic raw Vicon frames, fed through the real callback.
+
+        Five per 20 Hz tick so the measured rate lands on the nominal 100 Hz
+        instead of reading as permanently degraded. Every ~7 s it loses a burst
+        of frames and then serves a frozen one, so the drop/occlusion counters
+        and the banner colours can be seen moving without a mocap rig.
+        """
+        if ViconPosition is None:
+            return
+        if not hasattr(self, '_fake_frame'):
+            self._fake_frame = 0
+            self._fake_last_pose = None
+
+        for i in range(5):
+            self._fake_frame += 1
+            # Once every ~7 s, skip 30 frames: a 0.3 s hole, just past the
+            # 0.25 s that vicon_bridge calls flying blind.
+            if 340 <= (self._fake_frame % 700) < 370:
+                continue
+
+            msg = ViconPosition()
+            msg.frame_number = self._fake_frame
+            # mm, like the real receiver - vicon_bridge is what converts to m.
+            msg.x_trans = 20.0 * math.sin(t)
+            msg.y_trans = 10.0 * math.cos(t)
+            msg.z_trans = 1000.0 + float(i)
+            msg.x_rot = 0.0
+            msg.y_rot = 0.0
+            msg.z_rot = 0.0
+            msg.w = 1.0
+            msg.subject_name = self.drone_name
+            msg.segment_name = self.drone_name
+
+            # ...and just after the hole, re-serve the previous pose verbatim,
+            # which is what Tracker does when it has lost the body.
+            if 370 <= (self._fake_frame % 700) < 380 and self._fake_last_pose:
+                (msg.x_trans, msg.y_trans, msg.z_trans) = self._fake_last_pose
+            else:
+                self._fake_last_pose = (msg.x_trans, msg.y_trans, msg.z_trans)
+
+            self.on_vicon_raw(msg)
+
     # ------------------------------------------------------------------
     # Freshness. Use these so a dead connection shows '--' in the GUI
     # instead of a frozen last-known value.
@@ -243,6 +423,76 @@ class TelemetryModel(Node):
 
     def vicon_is_fresh(self):
         return self._fresh(self.vicon_poses_time)
+
+    def vicon_raw_is_fresh(self):
+        """Raw frames still arriving. Can be True while vicon_is_fresh() is
+        False - that is the interesting case: the mocap is talking to us, but
+        every frame is unusable, so the drone is getting nothing."""
+        return self._fresh(self.vicon_raw_time)
+
+    # ------------------------------------------------------------------
+    # Vicon link health. All return None for "never saw a raw frame", which the
+    # GUI must show as unknown rather than as a clean zero.
+    # ------------------------------------------------------------------
+
+    def vicon_raw_connected(self):
+        """False when there is no raw topic to count from at all (sim, or the
+        vicon_receiver package isn't built). Distinct from 'connected but
+        silent', which is vicon_raw_is_fresh()."""
+        return self.vicon_raw_time is not None
+
+    def vicon_frame_rate_hz(self):
+        """Measured arrival rate over the last second, or None."""
+        if self.vicon_raw_time is None:
+            return None
+        now = time.monotonic()
+        recent = sum(1 for t in self._vicon_arrivals if now - t <= 1.0)
+        return float(recent)
+
+    def vicon_rate_pct(self):
+        """Measured rate as a percentage of nominal, or None."""
+        hz = self.vicon_frame_rate_hz()
+        if hz is None:
+            return None
+        return 100.0 * hz / VICON_NOMINAL_HZ
+
+    def vicon_dropped_frames(self):
+        """(session total, count in the trailing window), or None.
+
+        A dropped frame is one Vicon numbered but that never reached this
+        process. That covers loss anywhere on the path - the Vicon PC, the
+        network, the receiver, or this GUI's own subscription queue - so treat
+        it as "frames I did not see", not as proof of a network fault.
+        """
+        if self.vicon_raw_time is None:
+            return None
+        now = time.monotonic()
+        self._prune(self._vicon_drops, now, VICON_DROP_WINDOW_SEC)
+        return (self._vicon_dropped_total, sum(n for _, n in self._vicon_drops))
+
+    def vicon_occluded_frames(self):
+        """(session total, count in the trailing window), or None.
+
+        Occluded = arrived but unusable, so vicon_bridge discarded it and the
+        drone's estimator got nothing for that frame. See vicon_frame_fault().
+        """
+        if self.vicon_raw_time is None:
+            return None
+        now = time.monotonic()
+        self._prune(self._vicon_occlusions, now, VICON_OCCLUSION_WINDOW_SEC)
+        return (self._vicon_occluded_total, len(self._vicon_occlusions))
+
+    def vicon_last_fault(self):
+        """(reason, seconds ago) for the most recent unusable frame, or None.
+
+        The reason matters: 'frozen frame' means Tracker lost the body and is
+        re-serving a stale pose, 'zero (0,0,0) pose' means it dropped the rigid
+        body entirely, and a quaternion fault usually means a marker swap.
+        """
+        if self._vicon_last_fault is None:
+            return None
+        reason, when = self._vicon_last_fault
+        return (reason, time.monotonic() - when)
 
     # ------------------------------------------------------------------
     # Derived values. Call with parens: model.battery_voltage()

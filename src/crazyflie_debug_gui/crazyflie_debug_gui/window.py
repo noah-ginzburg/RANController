@@ -37,9 +37,38 @@ CRITICAL  = "#d03b3b"
 
 # Point sizes, not pixels: pt scales with screen DPI, px does not, and this
 # runs on a 192-DPI display where hardcoded pixels come out half-size.
-SMALL_PANE_PT = 10      # Telemetry / Vicon Link - sparse text, shrink them
+SMALL_PANE_PT = 10      # Telemetry - sparse text, shrink it
 MOTOR_VALUE_PT = 13  # readable at a glance without eating the pane
 SPARKLINE_ROWS = 3.75   # sparkline height
+
+# Vicon Link is deliberately the loudest pane in the window. Losing mocap is
+# the one fault where the right response is "stop now", and it has to be
+# readable from across the room without looking for it - at 10pt it was a grey
+# line of text indistinguishable from the battery readout next to it.
+VICON_BANNER_PT = 22    # the one-line verdict
+VICON_VALUE_PT = 13     # the counters underneath
+
+# When the Vicon pane escalates. Rate is in Hz against the nominal 100.
+VICON_RATE_WARN_HZ = 80.0
+VICON_RATE_CRITICAL_HZ = 50.0
+# Must match VICON_DROP_WINDOW_SEC / VICON_OCCLUSION_WINDOW_SEC in
+# telemetry_model.py - the model counts over those windows and this only labels
+# them. Duplicated rather than imported so this file stays ROS-free and still
+# runs standalone.
+VICON_DROP_WINDOW_SEC = 3.0
+VICON_OCCLUSION_WINDOW_SEC = 5.0
+# Frames lost/unusable within the model's trailing window. Calibrated against
+# bags/flight_20260813_143119, where a HEALTHY in-flight feed still showed a
+# scattered ~2-12 dropped frames per 5 s (single frames, 20-30 ms apart) but
+# exactly ZERO occlusions until the drone actually crashed. So the two get
+# different sensitivities: a dropped frame is routine until it adds up to real
+# blind time, an occluded frame never is.
+# 25 frames at 100 Hz = 0.25 s, the same blind interval vicon_bridge's own
+# staleness watchdog warns at.
+VICON_DROP_WARN = 25
+VICON_DROP_CRITICAL = 50
+VICON_OCCLUSION_WARN = 1
+VICON_OCCLUSION_CRITICAL = 25
 
 # Full-scale values: what "100% of the bar" means. These are a display choice,
 # so they live here rather than in the model, which deals in real units.
@@ -301,18 +330,61 @@ class DroneWindow(QWidget):
 
     def make_vicon_link(self):
         box = QGroupBox("Vicon Link")
-        box.setStyleSheet(f"QLabel {{ font-size: {SMALL_PANE_PT}pt; }}")
+        box.setStyleSheet(f"QLabel {{ font-size: {VICON_VALUE_PT}pt; }}")
+
+        # The verdict, big enough to catch the eye on its own. Everything below
+        # it is the evidence for whatever it says.
+        self.vicon_banner = QLabel("VICON: --")
+        self.vicon_banner.setAlignment(Qt.AlignCenter)
+        self.vicon_banner.setWordWrap(True)
+        self._set_vicon_banner("VICON: NO DATA", None)
+
+        self.vicon_rate_label = QLabel("Frame rate: --")
         self.dropped_frames_label = QLabel("Dropped frames: --")
         self.occluded_frames_label = QLabel("Occluded frames: --")
-        self.staleness_label = QLabel("Staleness: --")
+        self.staleness_label = QLabel("Pose to drone: --")
+        # The counters are unlabelled numbers without these - "12" means nothing
+        # unless you know whether it is a rate, a total, or a window.
+        self.dropped_frames_label.setToolTip(
+            "Frames Vicon captured that never reached this machine (gaps in "
+            "frame_number). Counted for the whole session, and over the last "
+            "few seconds - the second number is the one that matters in flight.")
+        self.occluded_frames_label.setToolTip(
+            "Frames that arrived but were unusable, so vicon_bridge discarded "
+            "them and the drone's estimator got nothing: zero poses, broken "
+            "quaternions, or the last pose re-served verbatim when Tracker "
+            "loses the rigid body.")
+        self.vicon_rate_label.setToolTip("Nominal is 100 Hz.")
+
+        # Why the last frame was thrown away. Blank when there is nothing to say.
+        self.vicon_fault_label = QLabel("")
+        self.vicon_fault_label.setWordWrap(True)
 
         layout = QVBoxLayout()
+        layout.addWidget(self.vicon_banner)
+        layout.addWidget(self.vicon_rate_label)
         layout.addWidget(self.dropped_frames_label)
         layout.addWidget(self.occluded_frames_label)
         layout.addWidget(self.staleness_label)
+        layout.addWidget(self.vicon_fault_label)
         layout.addStretch()      # pack to the top instead of spreading out
         box.setLayout(layout)
         return box
+
+    def _set_vicon_banner(self, text, colour):
+        """Banner text plus a filled background. colour=None means 'unknown',
+        drawn in muted ink on no fill so it can't be mistaken for OK."""
+        self.vicon_banner.setText(text)
+        if colour is None:
+            self.vicon_banner.setStyleSheet(
+                f"font-size: {VICON_BANNER_PT}pt; font-weight: bold; "
+                f"color: {INK_MUTED}; border: 2px solid {GRIDLINE}; "
+                "border-radius: 6px; padding: 10px;")
+        else:
+            self.vicon_banner.setStyleSheet(
+                f"font-size: {VICON_BANNER_PT}pt; font-weight: bold; "
+                f"color: white; background-color: {colour}; "
+                "border-radius: 6px; padding: 10px;")
 
     def make_motors(self):
         # && because a single & is a Qt keyboard-shortcut marker, not a literal
@@ -621,18 +693,105 @@ class DroneWindow(QWidget):
         self.all_motor_bar.set_value(n.all_motor_spread())
 
         # --- Vicon link ------------------------------------------------
-        vicon_ok = n.vicon_is_fresh()
-        self._status(self.staleness_label,
-                     "Vicon: receiving" if vicon_ok else "Vicon: STALE / no data",
-                     GOOD if vicon_ok else CRITICAL)
+        self._refresh_vicon(n)
 
-    def _status(self, label, text, colour):
+    def _refresh_vicon(self, n):
+        """The Vicon pane. Worst condition wins the banner; the lines below it
+        are the evidence, so the operator can tell WHICH failure this is."""
+        pose_ok = n.vicon_is_fresh()
+        raw_fresh = n.vicon_raw_is_fresh()
+        dropped = n.vicon_dropped_frames()
+        occluded = n.vicon_occluded_frames()
+        rate = n.vicon_frame_rate_hz()
+
+        # --- counters --------------------------------------------------
+        def loss_colour(recent, warn, critical):
+            if recent >= critical:
+                return CRITICAL
+            if recent >= warn:
+                return WARNING
+            return GOOD
+
+        if dropped is None:
+            self._status(self.dropped_frames_label,
+                         "Dropped frames: n/a (no raw feed)", None, VICON_VALUE_PT)
+        else:
+            total, recent = dropped
+            self._status(self.dropped_frames_label,
+                         f"Dropped frames: {recent} in {int(VICON_DROP_WINDOW_SEC)}s "
+                         f"({total:,} total)",
+                         loss_colour(recent, VICON_DROP_WARN, VICON_DROP_CRITICAL),
+                         VICON_VALUE_PT)
+
+        if occluded is None:
+            self._status(self.occluded_frames_label,
+                         "Occluded frames: n/a (no raw feed)", None, VICON_VALUE_PT)
+        else:
+            total, recent = occluded
+            self._status(self.occluded_frames_label,
+                         f"Occluded frames: {recent} in "
+                         f"{int(VICON_OCCLUSION_WINDOW_SEC)}s ({total:,} total)",
+                         loss_colour(recent, VICON_OCCLUSION_WARN,
+                                     VICON_OCCLUSION_CRITICAL),
+                         VICON_VALUE_PT)
+
+        if rate is None:
+            self._status(self.vicon_rate_label, "Frame rate: --", None, VICON_VALUE_PT)
+        else:
+            rate_colour = (CRITICAL if rate < VICON_RATE_CRITICAL_HZ
+                           else WARNING if rate < VICON_RATE_WARN_HZ else GOOD)
+            self._status(self.vicon_rate_label,
+                         f"Frame rate: {rate:.0f} Hz (nominal 100)",
+                         rate_colour, VICON_VALUE_PT)
+
+        self._status(self.staleness_label,
+                     f"Pose to drone: {'flowing' if pose_ok else 'STOPPED'}",
+                     GOOD if pose_ok else CRITICAL, VICON_VALUE_PT)
+
+        fault = n.vicon_last_fault()
+        if fault is None or fault[1] > VICON_OCCLUSION_WINDOW_SEC:
+            self.vicon_fault_label.setText("")
+        else:
+            reason, age = fault
+            self.vicon_fault_label.setText(f"last bad frame: {reason} ({age:.1f}s ago)")
+            self.vicon_fault_label.setStyleSheet(
+                f"font-size: {VICON_VALUE_PT}pt; color: {SERIOUS};")
+
+        # --- the verdict -----------------------------------------------
+        # Ordered worst-first: the first condition that matches is the one
+        # shown, so a real outage is never masked by a milder warning.
+        drop_recent = dropped[1] if dropped else 0
+        occl_recent = occluded[1] if occluded else 0
+        if not pose_ok and not raw_fresh:
+            self._set_vicon_banner("VICON LOST\nNO DATA AT ALL", CRITICAL)
+        elif not pose_ok:
+            # Raw frames are arriving but none survive - the drone is getting
+            # nothing, which looks identical to a dead feed from onboard.
+            self._set_vicon_banner("VICON LOST\nEVERY FRAME UNUSABLE", CRITICAL)
+        elif occl_recent >= VICON_OCCLUSION_CRITICAL:
+            self._set_vicon_banner("VICON DEGRADED\nMARKERS OCCLUDED", CRITICAL)
+        elif drop_recent >= VICON_DROP_CRITICAL:
+            self._set_vicon_banner("VICON DEGRADED\nLOSING FRAMES", CRITICAL)
+        elif rate is not None and rate < VICON_RATE_CRITICAL_HZ:
+            self._set_vicon_banner("VICON DEGRADED\nFRAME RATE COLLAPSED", CRITICAL)
+        elif (occl_recent >= VICON_OCCLUSION_WARN
+                or drop_recent >= VICON_DROP_WARN
+                or (rate is not None and rate < VICON_RATE_WARN_HZ)):
+            self._set_vicon_banner("VICON UNSTEADY", WARNING)
+        elif dropped is None:
+            # Poses are flowing, so tracking is fine; we just cannot see the
+            # raw feed to count against it. Not a fault, but not a clean bill.
+            self._set_vicon_banner("VICON OK\n(frame counts unavailable)", GOOD)
+        else:
+            self._set_vicon_banner("VICON OK", GOOD)
+
+    def _status(self, label, text, colour, pt=SMALL_PANE_PT):
         """Set text plus a status colour. colour=None leaves it in default ink -
         used for '--', because unknown is not a status."""
         label.setText(text)
         label.setStyleSheet(
-            f"font-size: {SMALL_PANE_PT}pt; font-weight: bold; color: {colour};"
-            if colour else f"font-size: {SMALL_PANE_PT}pt;")
+            f"font-size: {pt}pt; font-weight: bold; color: {colour};"
+            if colour else f"font-size: {pt}pt;")
 
     @staticmethod
     def _tri(value):
@@ -655,10 +814,34 @@ class _FakeNode:
     def battery_voltage(self):  return 3.9 - 0.02 * self.t
     def rssi(self):             return 55
     def status_is_fresh(self):  return True
-    def vicon_is_fresh(self):   return True
     def is_connected(self):     return True
     def is_armed(self):         return True
     def is_tumbled(self):       return False
+
+    # --- Vicon link. Cycles through the states every 20 s so the banner and
+    # the counter colours can all be seen without a mocap rig.
+    def _phase(self):
+        return int(self.t / 5.0) % 4      # 0 ok, 1 unsteady, 2 degraded, 3 lost
+
+    def vicon_is_fresh(self):     return self._phase() != 3
+    def vicon_raw_is_fresh(self): return True
+    def vicon_raw_connected(self): return True
+
+    def vicon_frame_rate_hz(self):
+        return {0: 100.0, 1: 74.0, 2: 96.0, 3: 40.0}[self._phase()]
+
+    def vicon_dropped_frames(self):
+        recent = {0: 0, 1: 3, 2: 61, 3: 140}[self._phase()]
+        return (int(self.t * 4) + recent, recent)   # total includes the window
+
+    def vicon_occluded_frames(self):
+        recent = {0: 0, 1: 1, 2: 12, 3: 90}[self._phase()]
+        return (int(self.t * 2) + recent, recent)
+
+    def vicon_last_fault(self):
+        if self._phase() == 0:
+            return None
+        return ("frozen frame", 0.4)
 
     MAX_PWM = 65535   # 16-bit; a real motor cannot be commanded past this
 

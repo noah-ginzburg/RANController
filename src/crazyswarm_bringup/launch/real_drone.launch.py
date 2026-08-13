@@ -156,11 +156,11 @@ def launch_controllers(context, *args, **kwargs):
 def generate_launch_description():
     real_arg = DeclareLaunchArgument('real', default_value='true')
     #initial hover speed guess, pid takes over in sim
-    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.168')
+    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.0')
     hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.0')
     # Base height every drone takes off to; per-drone delta_z (from crazyflies.yaml)
     # is added on top of this for the icosphere target drones.
-    launch_height_arg = DeclareLaunchArgument('launch_height', default_value='0.35')
+    launch_height_arg = DeclareLaunchArgument('launch_height', default_value='0.5')
     # Must match the drones marked `enabled: true` in crazyflies.yaml — the sim
     # server only creates takeoff/land/arm services for enabled drones, and a
     # controller for a missing drone blocks forever in wait_for_service.
@@ -225,11 +225,14 @@ def generate_launch_description():
         # On Ctrl+C, launch sends SIGINT, then SIGTERM after sigterm_timeout, then
         # an uncatchable SIGKILL sigkill_timeout later. The crazyflie_server ignores
         # SIGINT, so with the 5s/10s defaults it lingers ~10s and gets relaunched as
-        # a duplicate. sigterm_timeout is kept ABOVE the controller's ~3s landing
-        # (DURATION) so a hardware land isn't cut short; sigkill then guarantees
-        # death ~6s after Ctrl+C. (NOTE: in Humble launch a *second* Ctrl+C is
-        # ignored — escalation is timer-based, not triggered by the second press.)
-        SetLaunchConfiguration('sigterm_timeout', '4'),
+        # a duplicate. sigterm_timeout MUST stay above the controller's
+        # LAND_DURATION (5s): SIGINT starts the land, and both crazyflie_server and
+        # vicon_bridge (which ignores SIGINT for this reason) have to survive the
+        # whole descent or the drone lands with no mocap and no radio link.
+        # 7s + 2s sigkill => guaranteed death ~9s after Ctrl+C.
+        # (NOTE: in Humble launch a *second* Ctrl+C is ignored — escalation is
+        # timer-based, not triggered by the second press.)
+        SetLaunchConfiguration('sigterm_timeout', '7'),
         SetLaunchConfiguration('sigkill_timeout', '2'),
         real_arg,
         hover_speed_sim_arg,
