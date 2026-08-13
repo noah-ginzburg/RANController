@@ -1,0 +1,328 @@
+# named list of all robots
+fileversion: 3
+
+robots:
+  # current starting positions:
+  #
+  #        ^ x
+  #     <--+
+  #        y
+  #
+  #  0.4  0.0 -0.4 pos y/
+  #  -------------- / pos x
+  #   5    4    3  |  0.4
+  #   6    1    2  |  0.0
+  #   7    8    9  | -0.4
+  #  
+  #  in meter
+
+
+
+  # cf02:
+  #   #enabled: true
+  #   enabled: false
+  #   uri: radio://0/80/2M/E7E7E7E702
+  #   initial_position: [ 0.0, 0.4, 0.0]
+  #   type: cf21
+
+  # cf01/cf02/cf03 form an exact equilateral target triangle (still 1.4m
+  # sides, still equidistant/equiangular from cf09), but placed via
+  # "icosahedral 3-fold orbit placement" instead of an arbitrary planar
+  # layout: each target direction from cf09 is the previous one rotated
+  # 120deg about one of the 10 exact 3-fold symmetry axes the Lloyd-relaxed
+  # RAN mesh inherits from its icosahedron seed (see the "Symmetry-matched
+  # target placement" section of mean_field_model_3d.ipynb and
+  # generate_kernel_cache_lloyd.py's icosahedral_three_fold_axes /
+  # symmetric_target_triplet, which computed these). Because the mesh maps
+  # exactly onto itself under that same rotation, all 3 targets see
+  # identical node neighborhoods -- verified to match to <0.01deg on the
+  # cached kernel -- so there's no structural winner the way the old
+  # (arbitrary triangle + -18deg rotation workaround) placement had. That
+  # old workaround targeted the plain icosphere's 12 dense vertices
+  # specifically and no longer applies now that cf09 runs the Lloyd-relaxed
+  # mesh (spherical_RAN_server_lloyd); removed.
+  #
+  # cf09 (the RAN tracker) stays at the origin; target distance 1.286m,
+  # 66deg pairwise separation -- matches the old layout's scale.
+
+  # Debugging cf09
+  cf03:
+    enabled: false
+    # enabled: true
+    uri: radio://0/100/2M/E7E7E7E703
+    initial_position: [0.683532, 1.011354, 0.0]
+    delta_z: 0.403647
+    type: cf21
+
+  cf02:
+    # enabled: true
+    enabled: false
+    uri: radio://0/100/2M/E7E7E7E702
+    initial_position: [1.183710, -0.298131, 0.0]
+    delta_z: 0.403647
+    type: cf21
+
+  cf09: # das hatte heute schon funktioniert
+    # enabled: true
+    enabled: true
+    uri: radio://0/100/2M/E7E7E7E7E8
+    initial_position: [0.0, 0.0, 0.0]
+    # delta_z: 0.8533
+    delta_z: 0.0
+    type: cf21
+
+  cf01:
+    enabled: false
+    # enabled: false
+    uri: radio://0/100/2M/E7E7E7E701
+    initial_position: [0.933621, 0.356611, 0.0]
+    delta_z: 1.617606
+    type: cf21  # see robot_types
+
+
+  # 3 Target tracking
+  # cf03:
+  #   enabled: true
+  #   # enabled: true
+  #   uri: radio://0/100/2M/E7E7E7E703
+  #   initial_position: [0.683532, 1.011354, 0.0]
+  #   delta_z: 0.403647
+  #   type: cf21
+
+  # cf02:
+  #   # enabled: true
+  #   enabled: true
+  #   uri: radio://0/100/2M/E7E7E7E702
+  #   initial_position: [1.183710, -0.298131, 0.0]
+  #   delta_z: 0.403647
+  #   type: cf21
+
+  # cf09: # das hatte heute schon funktioniert
+  #   # enabled: true
+  #   enabled: true
+  #   uri: radio://0/100/2M/E7E7E7E7E8
+  #   initial_position: [-0.0, 0.0, 0.0]
+  #   delta_z: 0.8083
+  #   type: cf21
+
+  # cf01:
+  #   enabled: true
+  #   # enabled: false
+  #   uri: radio://0/100/2M/E7E7E7E701
+  #   initial_position: [0.933621, 0.356611, 0.0]
+  #   delta_z: 1.617606
+  #   type: cf21  # see robot_types
+
+  #Two target tracking
+  # cf03:
+  #   enabled: false
+  #   # enabled: true
+  #   uri: radio://0/100/2M/E7E7E7E703
+  #   initial_position: [0.75, -0.5, 0.0]
+  #   delta_z: 1.0175
+  #   type: cf21
+
+  # cf02:
+  #   # enabled: true
+  #   enabled: true
+  #   uri: radio://0/100/2M/E7E7E7E702
+  #   initial_position: [0.75, 0.5, 0.0]
+  #   delta_z: 0.0
+  #   type: cf21
+
+  # cf09: # das hatte heute schon funktioniert
+  #   # enabled: true
+  #   enabled: true
+  #   uri: radio://0/100/2M/E7E7E7E7E8
+  #   initial_position: [0.0, 0.0, 0.0]
+  #   delta_z: 0.0  # triangle centroid height, see comment above
+  #   type: cf21
+
+  # cf01:
+  #   enabled: true
+  #   # enabled: false
+  #   uri: radio://0/100/2M/E7E7E7E701
+  #   initial_position: [0.75, -0.5, 0.0]
+  #   delta_z: 0.0 # rotated, see comment above
+  #   type: cf21  # see robot_types
+
+
+
+  # cf10: # das hatte heute schon funktioniert
+  #   enabled: true
+  #   # enabled: false
+  #   uri: radio://0/80/2M/E7E7E7E7EA
+  #   initial_position: [ 0.4, 0.4, 0.0]
+  #   type: cf21
+  # cf11: # das hatte heute schon funktioniert
+  #   enabled: true
+  #   # enabled: false
+  #   uri: radio://0/80/2M/E7E7E7E7EB
+  #   initial_position: [ 0.4, -0.4, 0.0]
+  #   type: cf21
+  # cf12: # das hatte heute schon funktioniert
+  #   enabled: true
+  #   # enabled: false
+  #   uri: radio://0/80/2M/E7E7E7E7EC
+  #   initial_position: [ -0.4, -0.4, 0.0]
+  #   type: cf21
+  # cf13: # das hatte heute schon funktioniert
+  #   enabled: true
+  #   # enabled: false
+  #   uri: radio://0/80/2M/E7E7E7E7ED
+  #   initial_position: [ -0.4, 0.4, 0.0]
+  #   type: cf21
+
+
+  # The following robots are waiting for new markers
+  # cf07: 
+    # enabled: true
+    # enabled: false
+  #   uri: radio://0/80/2M/E7E7E7E707
+  #   initial_position: [-0.4, 0.4, 0.0]
+  #   type: cf21
+    
+  # cf08:
+    # enabled: true
+    # enabled: false
+  #   uri: radio://0/80/2M/E7E7E7E7E7
+  #   initial_position: [-0.4, 0.0, 0.0]
+  #   type: cf21
+
+  # cf09:
+  #   enabled: false
+  #   # enabled: true
+  #   uri: radio://0/80/2M/E7E7E7E7E7
+  #   initial_position: [-0.4,-0.4, 0.0]
+  #   type: cf21
+
+# Definition of the various robot types
+
+robot_types:
+  cf21:
+    motion_capture:
+      # tracking: "vendor" # one of "vendor", "librigidbodytracker"
+      tracking: "librigidbodytracker" # one of "vendor", "librigidbodytracker"
+      # only if enabled; see motion_capture.yaml
+      # marker: default_single_marker
+      marker: arrangement_v3
+      dynamics: default
+    big_quad: false
+    battery:
+      voltage_warning: 3.8  # V
+      voltage_critical: 3.7 # V
+    # firmware_params:
+    #   kalman:
+    #     pNAcc_xy: 1.0 # default 0.5
+    # firmware_logging: DISABLED -- every log topic here is extra radio traffic
+    # competing with the extpos/extpose position corrections sent to the drone;
+    # this custom logging was fighting the Vicon corrections for radio time and
+    # causing the estimator to stall/drift. Re-enable only for debugging, not
+    # during normal flight.
+    # firmware_logging:
+    #   enabled: true
+    #   custom_topics:
+    #     low_level_control:
+    #       frequency: 50
+    #       vars: ["ctrlMel.cmd_thrust", "ctrlMel.cmd_roll", "ctrlMel.cmd_pitch", "ctrlMel.cmd_yaw"]
+    #     # Per-motor PWM (0..65535). A weak motor shows consistently HIGHER pwm than
+    #     # its diagonal partner; pegged at 65535 = saturated -> no attitude headroom.
+    #     motor_pwm:
+    #       frequency: 20
+    #       vars: ["motor.m1", "motor.m2", "motor.m3", "motor.m4"]
+
+    # reference_frame: "odom" 
+
+  cf21_mocap_deck:
+    motion_capture:
+      tracking: "librigidbodytracker" # one of "vendor", "librigidbodytracker"
+      # only if enabled; see motion_capture.yaml
+      marker: mocap_deck
+      dynamics: default
+    big_quad: false
+    battery:
+      voltage_warning: 3.8  # V
+      voltage_critical: 3.7 # V
+    # firmware_params:
+    #   kalman:
+    #     pNAcc_xy: 1.0 # default 0.5
+    #firmware_logging:
+    #   enabled: true
+    #   default_topics:
+    #   pose:
+    #     frequency: 1 # Hz
+    #   custom_topics:
+    #    topic_name3: 
+    #      frequency: 1
+    #      vars: ["acc.x", "acc.y", "acc.z"]
+    # reference_frame: "mocap" 
+
+# global settings for all robots
+all:
+  # firmware logging for all drones (use robot_types/type_name to set per type, or
+  # robots/drone_name to set per drone)
+  # firmware_logging: DISABLED -- pose (100Hz) and status (1Hz) readback were
+  # competing with position-correction packets for radio time (see note in
+  # robot_types.cf21). Re-enable only for debugging, not during normal flight.
+  firmware_logging:
+    enabled: true
+    default_topics:
+      pose:
+        frequency: 2 # Hz
+      status:
+        frequency: 1 # Hz
+    # --- tuning diagnostics (uncomment to re-enable; adds radio load) ---
+    custom_topics:
+    #   ctrl:
+    #     frequency: 50 # Hz
+    #     # What the position/velocity controller is COMMANDING the attitude loop to do.
+    #     # On a pure vertical (z) command these should stay near 0; if roll/pitch
+    #     # targets swing, the position controller is over-reacting -> wobble/flip.
+    #     vars: ["ctrltarget.roll", "ctrltarget.pitch", "stabilizer.thrust"]
+      # Per-motor PWM (0..65535) to find a weak motor/prop: the weak one runs
+      # consistently HIGHER than its diagonal partner; pegged at 65535 = saturated.
+      # TEMPORARY debug load -- remove again after the asymmetry is found.
+      motor_pwm:
+        frequency: 5
+        vars: ["motor.m1", "motor.m2", "motor.m3", "motor.m4"]
+      est:
+        frequency: 10 # Hz
+        # Kalman position variance = estimate health. If these are large or growing,
+        # the estimate is bad -> fix Vicon/extpos before touching any gain.
+        # roll/pitch/yaw added to diagnose spiral-on-takeoff: position topics can
+        # all "match" while the mocap object frame is yawed/tilted vs the body.
+        vars: ["stateEstimate.x", "stateEstimate.y", "stateEstimate.z",
+               "stateEstimate.roll", "stateEstimate.pitch", "stateEstimate.yaw"]
+  # firmware parameters for all drones (use robot_types/type_name to set per type, or
+  # robots/drone_name to set per drone)
+  firmware_params:
+    commander:
+      enHighLevel: 1
+    stabilizer:
+      # estimator: 1 # 1: complementary, 2: kalman
+      estimator: 2 # 1: complementary, 2: kalman
+      controller: 1 # 1: PID, 2: mellinger  (PID for bring-up; mellinger flips on imperfect estimate)
+      # controller: 2 # 1: PID, 2: mellinger
+    # ring:
+    #   effect: 16 # 6: double spinner, 7: solid color, 16: packetRate
+    #   solidBlue: 255 # if set to solid color
+    #   solidGreen: 0 # if set to solid color
+    #   solidRed: 0 # if set to solid color
+    #   headlightEnable: 0
+    locSrv:
+      extPosStdDev: 1e-2
+      # 4.5e-2 (was 4.5e-3): loosened 10x for full-pose fusion. Vicon attitude
+      # arrives with latency; trusting it tightly drags the EKF attitude behind
+      # reality during takeoff transients (suspected cause of full-pose tip-overs
+      # in the 07-16 A/B and 07-17 flights). At 4.5e-2 Vicon still bounds yaw
+      # drift over seconds, but fast attitude stays gyro-driven.
+      extQuatStdDev: 4.5e-2
+    kalman:
+      resetEstimation: 1   # clear NaN/stale estimator state on connect (NaN never self-heals)
+  # reference frame for on-board state-estimate of all drones (use robot_types/type_name to set per type, or
+  # robots/drone_name to set per drone)
+  # reference_frame: "world"
+  reference_frame: "mocap"
+  broadcasts:
+    num_repeats: 15 # number of times broadcast commands are repeated
+    delay_between_repeats_ms: 1 # delay in milliseconds between individual repeats

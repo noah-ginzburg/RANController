@@ -1,7 +1,0 @@
-[submodule "src/crazyswarm2"]
-	path = src/crazyswarm2
-	url = https://github.com/noah-ginzburg/crazyswarm2.git
-[submodule "src/ros2-vicon-receiver"]
-	path = src/ros2-vicon-receiver
-	url = https://github.com/CPS-Konstanz/ros2-vicon-receiver.git
-	branch = humble
