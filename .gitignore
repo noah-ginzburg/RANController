@@ -23,6 +23,12 @@ dist/
 .vscode/
 .idea/
 
+# Flight logs and rosbags (hundreds of MB of binary data; regenerated per flight)
+bags/
+
+# cflib TOC cache, keyed by firmware hash -- regenerated on connect
+cache/
+
 # Misc
 *.swp
 *.swo
