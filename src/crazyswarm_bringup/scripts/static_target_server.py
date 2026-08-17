@@ -5,7 +5,7 @@ Publish static (non-flying) targets, so they look like drones to the rest of the
 
 crazyflie_sim only knows about robots it simulates, so rather than patch it,
 this node fakes the one thing downstream actually reads: a TF frame.
-spherical_RAN_server_lloyd finds its targets by looking up `mocap -> <name>`
+spherical_RAN_server finds its targets by looking up `mocap -> <name>`
 (see _get_targets_from_tf), so a broadcast frame is indistinguishable from a
 real drone as far as the RAN model is concerned.
 

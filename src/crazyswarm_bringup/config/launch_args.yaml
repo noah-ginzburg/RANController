@@ -1,0 +1,149 @@
+# Default values for the launch arguments.
+#
+# These are the things you'd otherwise type on the command line, like
+# `drone_names:=cf09`. They are NOT node parameters: the launch system consumes
+# them before any node exists, which is why they can't live in
+# controller_params.yaml or ran_params.yaml. Putting them there does nothing.
+#
+# Anything here is still overridable on the command line, and the command line
+# always wins:
+#
+#   ros2 launch crazyswarm_bringup real_drone.launch.py drone_names:=cf01
+#
+# `common` applies to every launch file. The `real`, `sim` and `teleop` sections
+# are then layered on top, so a value in one of those overrides `common` for
+# that launch file only.
+#
+# Write values as strings. The launch files compare them as text, so `'true'`
+# and `'false'` must be lowercase to match. The one exception is `rviz`, which
+# has to be capital-T `'True'` because crazyswarm2 gates on an exact string
+# match and would silently never start RViz otherwise.
+#
+# Not listed here: the paths to controller_params.yaml, ran_params.yaml,
+# static_targets.yaml and the RViz configs. Those are computed from the package
+# share directory at launch time, and rviz_config_file additionally depends on
+# use_static_targets. Pass them on the command line if you need to point
+# somewhere else.
+
+common:
+  # Which drones to bring up. Comma-separated, e.g. 'cf09' or 'cf01,cf02,cf09'.
+  # Whitespace around the commas is stripped, so 'cf01, cf02' is fine.
+  #
+  # These must match the drones marked `enabled: true` in crazyflies.yaml. A
+  # controller for a drone the server doesn't know about waits forever in
+  # wait_for_service.
+  drone_names: 'cf09'
+
+  # Which of those drones run an attractor network server. Same comma-separated
+  # format, and every name here should also appear in drone_names.
+  ran_drones: 'cf09'
+
+  # Base height every drone takes off to, in metres. Each drone's delta_z from
+  # crazyflies.yaml is added on top of this.
+  launch_height: '0.5'
+
+  # ---- Targets ---------------------------------------------------------
+  #
+  # Read this before setting the two below, because the naming is misleading.
+  #
+  # You do NOT list your targets here. The RAN server treats every entry in
+  # `all_drones` except itself as a target, and the launch file builds that
+  # list as `drone_names + the enabled targets in static_targets.yaml`. So a
+  # drone or static target becomes a target simply by existing.
+  #
+  # What these two do is override the WEIGHT of a target that is already in
+  # that list. They're zipped together positionally into a name -> quality
+  # map, and any target not named here just gets `target_quality` from
+  # ran_params.yaml (currently 20.0) instead.
+  #
+  # Format: two comma-separated lists of the same length. Names are strings,
+  # qualities are numbers.
+  #
+  #   target_names:     'cf01,cf02'
+  #   target_qualities: '40.0,10.0'
+  #
+  # would make cf01 twice as attractive as the default and cf02 half as
+  # attractive. Leave both empty and every target keeps the default weight.
+  #
+  # Two things to watch:
+  #   - The lists must be the same length or the launch fails with an error
+  #     saying so. When use_static_targets is on, the static targets' names and
+  #     qualities are appended to both lists, so they stay balanced on their
+  #     own -- you only need your own two entries to match each other.
+  #   - A name that isn't in drone_names or static_targets.yaml does nothing at
+  #     all. It won't error, it just never gets looked up.
+  target_names: ''
+  target_qualities: ''
+
+  # Use the invisible draggable markers from config/static_targets.yaml instead
+  # of real target drones. Recommended over flying real targets.
+  use_static_targets: 'false'
+
+  # Optional override of the `quality` values in static_targets.yaml, applied
+  # positionally in the order the targets appear in that file. Comma-separated,
+  # same as above. A single value covers every target, and empty keeps whatever
+  # the file itself says.
+  #
+  #   static_target_qualities: '25.0'            # all targets -> 25.0
+  #   static_target_qualities: '40.0,20.0,20.0'  # per target, in file order
+  static_target_qualities: ''
+
+  # An initial hover speed guess. On real hardware this is unused (set_speeds
+  # only applies it in sim), and in sim the PID takes over from it.
+  hover_speed_real: '0.0'
+  hover_speed_sim: '0.0'
+
+real:
+  real: 'true'
+
+  # Record a rosbag to bags/flight_<timestamp>/.
+  record: 'true'
+
+  # Capital T on purpose -- see the note at the top of this file.
+  rviz: 'True'
+
+  # Set true by real_drone_teleop.launch.py, which makes the controller take
+  # off by itself and stops the RAN server publishing a heading. Leave it false
+  # for normal flights.
+  teleop_enabled: 'false'
+
+  # On Ctrl+C, launch sends SIGINT, then SIGTERM after sigterm_timeout, then an
+  # uncatchable SIGKILL sigkill_timeout later.
+  #
+  # sigterm_timeout MUST stay above the controller's land_duration (5 s in
+  # controller_params.yaml). SIGINT starts the landing, and both
+  # crazyflie_server and vicon_bridge have to survive the whole descent or the
+  # drone lands with no mocap and no radio link. 7 + 2 means everything is
+  # dead about 9 s after Ctrl+C.
+  #
+  # crazyflie_server also ignores SIGINT entirely, so with launch's 5/10
+  # defaults it lingers about 10 s and reappears as a duplicate.
+  sigterm_timeout: '7'
+  sigkill_timeout: '2'
+
+sim:
+  real: 'false'
+
+  # Sim needs a nonzero hover speed to get off the ground before the PID
+  # settles; real hardware doesn't use this at all.
+  hover_speed_sim: '0.168'
+
+  # The sim workflow is built around the static targets, so they're on here.
+  use_static_targets: 'true'
+
+  # Nothing has to survive a landing in sim, so the shutdown window can be
+  # short.
+  sigterm_timeout: '2'
+  sigkill_timeout: '2'
+
+teleop:
+  # teleop_twist_keyboard's own speed and turn rate. Its stock speed of 0.5 m/s
+  # is brisk for a Crazyflie indoors, so this matches max_speed in
+  # controller_params.yaml instead.
+  teleop_speed: '0.2'
+  teleop_turn: '0.5'
+
+  # Sourced inside the teleop terminal. gnome-terminal is sometimes
+  # dbus-activated, and when it is, the new window doesn't inherit this
+  # process's environment.
+  ws_setup: '~/biodrone/install/setup.bash'

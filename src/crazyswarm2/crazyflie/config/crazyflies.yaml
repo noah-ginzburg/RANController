@@ -25,22 +25,34 @@ robots:
   #   initial_position: [ 0.0, 0.4, 0.0]
   #   type: cf21
 
-  # cf01/cf02/cf03 form an exact equilateral target triangle (still 1.4m
-  # sides, still equidistant/equiangular from cf09), but placed via
-  # "icosahedral 3-fold orbit placement" instead of an arbitrary planar
-  # layout: each target direction from cf09 is the previous one rotated
-  # 120deg about one of the 10 exact 3-fold symmetry axes the Lloyd-relaxed
-  # RAN mesh inherits from its icosahedron seed (see the "Symmetry-matched
-  # target placement" section of mean_field_model_3d.ipynb and
-  # generate_kernel_cache_lloyd.py's icosahedral_three_fold_axes /
-  # symmetric_target_triplet, which computed these). Because the mesh maps
-  # exactly onto itself under that same rotation, all 3 targets see
-  # identical node neighborhoods -- verified to match to <0.01deg on the
-  # cached kernel -- so there's no structural winner the way the old
-  # (arbitrary triangle + -18deg rotation workaround) placement had. That
-  # old workaround targeted the plain icosphere's 12 dense vertices
-  # specifically and no longer applies now that cf09 runs the Lloyd-relaxed
-  # mesh (spherical_RAN_server_lloyd); removed.
+  # cf01/cf02/cf03 form an exact equilateral target triangle. The sides are
+  # still 1.4m and the drones are still equidistant and equiangular from
+  # cf09, but the layout is no longer an arbitrary planar one. Instead each
+  # target direction from cf09 is the previous direction rotated 120deg about
+  # one of the 10 exact 3-fold symmetry axes that the RAN mesh inherits from
+  # the icosahedron it was built from. The "Symmetry-matched target
+  # placement" section of mean_field_model_3d.ipynb explains the reasoning,
+  # and its icosahedral_three_fold_axes and symmetric_target_triplet
+  # functions are what computed these positions.
+  #
+  # The point of doing it this way is that the mesh maps exactly onto itself
+  # under that same rotation, so all three targets see identical node
+  # neighborhoods. That removes the structural winner the old layout had (an
+  # arbitrary triangle plus a -18deg rotation to work around it).
+  #
+  # This still holds on the plain icosphere that cf09 runs, because
+  # subdivision is applied identically everywhere and so can't break a
+  # symmetry the base icosahedron already had. Checked on 2026-08-17:
+  # rotating the n_sub=3 icosphere 120 and 240deg about each of the 10 axes
+  # maps it back onto itself to within 4.9e-08, which is about the limit of
+  # float32 precision for pyvista's point array.
+  #
+  # So the -18deg rotation workaround is still unnecessary, though not for
+  # the reason that used to be written here. It hasn't become irrelevant, it
+  # has been superseded. It existed to keep targets away from the
+  # icosphere's 12 valence-5 vertices, and placing them by identical
+  # neighborhoods makes the three targets equivalent to each other whether
+  # or not one of them happens to land near one.
   #
   # cf09 (the RAN tracker) stays at the origin; target distance 1.286m,
   # 66deg pairwise separation -- matches the old layout's scale.

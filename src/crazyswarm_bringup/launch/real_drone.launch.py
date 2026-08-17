@@ -9,6 +9,25 @@ from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
 
 
+def _load_launch_args(section):
+    # Defaults for the launch arguments, from config/launch_args.yaml. `common`
+    # applies everywhere and the named section is layered on top of it. Values
+    # come back as strings because that is what DeclareLaunchArgument's
+    # default_value takes, and what the launch files compare against.
+    path = os.path.join(
+        get_package_share_directory('crazyswarm_bringup'), 'config', 'launch_args.yaml')
+    with open(path, 'r') as f:
+        content = yaml.safe_load(f)
+
+    merged = dict(content.get('common', {}))
+    merged.update(content.get(section, {}))
+    # A bare yaml `true` becomes Python True, which str()s to 'True' and would
+    # then fail the launch files' `== 'true'` checks. Fold bools down to the
+    # lowercase form the comparisons expect.
+    return {k: ('true' if v else 'false') if isinstance(v, bool) else str(v)
+            for k, v in merged.items()}
+
+
 def _load_static_targets(path, override_str):
     # (names, qualities) of the enabled targets in a static_targets.yaml, in
     # file order -- the names so the RAN server can be told which TF frames to
@@ -57,8 +76,18 @@ def launch_controllers(context, *args, **kwargs):
     launch_height = float(LaunchConfiguration('launch_height').perform(context))
     delta_z_by_name = _load_delta_z(drone_names)
 
+    # Tuning parameters, one file per node type. These go first in each node's
+    # parameters list, so the per-drone values computed below still override
+    # them; launch applies the list in order and the last write wins.
+    controller_params = LaunchConfiguration('controller_params').perform(context)
+    ran_params = LaunchConfiguration('ran_params').perform(context)
+    # real_drone_teleop.launch.py sets this. It makes controller_server take
+    # off by itself, since teleop has no takeoff button, and it silences the RAN
+    # server's heading publish so the model can't fight the keyboard.
+    teleop_enabled = LaunchConfiguration('teleop_enabled').perform(context) == 'true'
+
     # Static (non-flying) targets: nothing simulated, just a `mocap -> <name>`
-    # TF frame each, which is what spherical_RAN_server_lloyd looks up -- so the
+    # TF frame each, which is what spherical_RAN_server looks up -- so the
     # RAN server treats them as targets purely by having them in `all_drones`.
     # use_static_targets:=false runs none of it, leaving the target drones as
     # the targets exactly as before.
@@ -122,24 +151,28 @@ def launch_controllers(context, *args, **kwargs):
             executable='controller_server',
             name=f'controller_server_{name}',
             output='screen',
-            parameters=[{'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real},
-                        {'launch_height': launch_height}, {'delta_z': delta_z_by_name[name]}],
+            parameters=[controller_params,
+                        {'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real},
+                        {'launch_height': launch_height}, {'delta_z': delta_z_by_name[name]},
+                        {'teleop_enabled': teleop_enabled}],
         ))
         if name in ran_drones:
             # An empty list has no inferrable parameter type, and launch rejects
             # it ("got '()' of type tuple") -- so leave the pair out entirely and
             # let the RAN server's own declare_parameter defaults stand. Hit by
             # both use_static_targets:=false and :=true with nothing enabled.
-            ran_params = [{'drone_name': name}, {'all_drones': ran_targets}]
+            ran_node_params = [ran_params,
+                               {'drone_name': name}, {'all_drones': ran_targets},
+                               {'teleop_enabled': teleop_enabled}]
             if target_names and target_qualities:
-                ran_params += [{'target_names': target_names},
-                               {'target_qualities': target_qualities}]
+                ran_node_params += [{'target_names': target_names},
+                                    {'target_qualities': target_qualities}]
             actions.append(Node(
                 package='spherical_ran',
-                executable='spherical_RAN_server_lloyd',
+                executable='spherical_RAN_server',
                 name=f'spherical_RAN_server_{name}',
                 output='screen',
-                parameters=ran_params,
+                parameters=ran_node_params,
             ))
         # One GUI per drone, outside the ran_drones check so it always runs.
         actions.append(Node(
@@ -154,26 +187,21 @@ def launch_controllers(context, *args, **kwargs):
 
 
 def generate_launch_description():
-    real_arg = DeclareLaunchArgument('real', default_value='true')
-    #initial hover speed guess, pid takes over in sim
-    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value='0.0')
-    hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value='0.0')
-    # Base height every drone takes off to; per-drone delta_z (from crazyflies.yaml)
-    # is added on top of this for the icosphere target drones.
-    launch_height_arg = DeclareLaunchArgument('launch_height', default_value='0.5')
-    # Must match the drones marked `enabled: true` in crazyflies.yaml — the sim
-    # server only creates takeoff/land/arm services for enabled drones, and a
-    # controller for a missing drone blocks forever in wait_for_service.
-    drone_names_arg = DeclareLaunchArgument('drone_names', default_value='cf09')
-    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value='cf09')
-    target_names_arg = DeclareLaunchArgument('target_names', default_value='')
-    target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value='')
-    record_arg = DeclareLaunchArgument('record', default_value='true')
-    # The real launch used to run headless; the static-target workflow needs RViz
-    # for the marker drag handles, so it's on by default and switchable from here.
-    # Capital True/False -- crazyswarm2 gates rviz on LaunchConfigurationEquals,
-    # which is an exact string match, so 'true' would silently never start it.
-    rviz_arg = DeclareLaunchArgument('rviz', default_value='True')
+    # Every default below comes from config/launch_args.yaml, so the values live
+    # in one editable place instead of being spread through this file. Each is
+    # still overridable on the command line as usual.
+    args = _load_launch_args('real')
+
+    real_arg = DeclareLaunchArgument('real', default_value=args['real'])
+    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value=args['hover_speed_sim'])
+    hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value=args['hover_speed_real'])
+    launch_height_arg = DeclareLaunchArgument('launch_height', default_value=args['launch_height'])
+    drone_names_arg = DeclareLaunchArgument('drone_names', default_value=args['drone_names'])
+    ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value=args['ran_drones'])
+    target_names_arg = DeclareLaunchArgument('target_names', default_value=args['target_names'])
+    target_qualities_arg = DeclareLaunchArgument('target_qualities', default_value=args['target_qualities'])
+    record_arg = DeclareLaunchArgument('record', default_value=args['record'])
+    rviz_arg = DeclareLaunchArgument('rviz', default_value=args['rviz'])
 
     pkg_bringup = get_package_share_directory('crazyswarm_bringup')
 
@@ -183,10 +211,24 @@ def generate_launch_description():
     static_targets_yaml_arg = DeclareLaunchArgument(
         'static_targets_yaml',
         default_value=os.path.join(pkg_bringup, 'config', 'static_targets.yaml'))
-    use_static_targets_arg = DeclareLaunchArgument('use_static_targets', default_value='false')
-    # Overrides the yaml's per-target `quality`, positionally.
+    use_static_targets_arg = DeclareLaunchArgument(
+        'use_static_targets', default_value=args['use_static_targets'])
     static_target_qualities_arg = DeclareLaunchArgument(
-        'static_target_qualities', default_value='')
+        'static_target_qualities', default_value=args['static_target_qualities'])
+
+    # Tuning parameters for the two nodes that have anything worth tuning. Point
+    # these somewhere else to try out a set of gains without editing the configs
+    # that ship with the package.
+    controller_params_arg = DeclareLaunchArgument(
+        'controller_params',
+        default_value=os.path.join(pkg_bringup, 'config', 'controller_params.yaml'))
+    ran_params_arg = DeclareLaunchArgument(
+        'ran_params',
+        default_value=os.path.join(pkg_bringup, 'config', 'ran_params.yaml'))
+
+    # Normally false. real_drone_teleop.launch.py sets it true -- see that file.
+    teleop_enabled_arg = DeclareLaunchArgument(
+        'teleop_enabled', default_value=args['teleop_enabled'])
 
     # 3_targets.rviz shows the cf01/02/03 RobotModels, which don't exist when
     # the targets are static -- so default to the config that draws the target
@@ -222,18 +264,11 @@ def generate_launch_description():
     crazyflie_controllers = OpaqueFunction(function=launch_controllers)
 
     return LaunchDescription([
-        # On Ctrl+C, launch sends SIGINT, then SIGTERM after sigterm_timeout, then
-        # an uncatchable SIGKILL sigkill_timeout later. The crazyflie_server ignores
-        # SIGINT, so with the 5s/10s defaults it lingers ~10s and gets relaunched as
-        # a duplicate. sigterm_timeout MUST stay above the controller's
-        # LAND_DURATION (5s): SIGINT starts the land, and both crazyflie_server and
-        # vicon_bridge (which ignores SIGINT for this reason) have to survive the
-        # whole descent or the drone lands with no mocap and no radio link.
-        # 7s + 2s sigkill => guaranteed death ~9s after Ctrl+C.
-        # (NOTE: in Humble launch a *second* Ctrl+C is ignored — escalation is
-        # timer-based, not triggered by the second press.)
-        SetLaunchConfiguration('sigterm_timeout', '7'),
-        SetLaunchConfiguration('sigkill_timeout', '2'),
+        # Shutdown timing, explained in config/launch_args.yaml. Note that in
+        # Humble a *second* Ctrl+C is ignored: the escalation is timer-based,
+        # not triggered by pressing it again.
+        SetLaunchConfiguration('sigterm_timeout', args['sigterm_timeout']),
+        SetLaunchConfiguration('sigkill_timeout', args['sigkill_timeout']),
         real_arg,
         hover_speed_sim_arg,
         hover_speed_real_arg,
@@ -247,6 +282,9 @@ def generate_launch_description():
         static_targets_yaml_arg,
         use_static_targets_arg,
         static_target_qualities_arg,
+        controller_params_arg,
+        ran_params_arg,
+        teleop_enabled_arg,
         rviz_config_arg,
         crazyswarm2,
         TimerAction(period=3.0, actions=[crazyflie_controllers]),

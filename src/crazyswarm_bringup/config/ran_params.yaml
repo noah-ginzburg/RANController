@@ -1,0 +1,159 @@
+# Tuning parameters for spherical_ran/spherical_RAN_server.
+#
+# The launch files load this and hand it to every RAN server node. Change a
+# value here and relaunch; you don't need to touch any Python.
+#
+# The `/**` key means "apply this to whichever node is given the file". The
+# launch files rename each server to spherical_RAN_server_<drone>, so if we
+# matched on the exact node name we'd need a separate block for every drone.
+# If you do want to tune one drone differently, add a block with its exact name
+# (for example `spherical_RAN_server_cf01:`) after the `/**` one. An exact name
+# match takes priority over the wildcard.
+#
+# A few parameters are deliberately not set here: drone_name, all_drones,
+# target_names and target_qualities. The launch files work those out per drone
+# and pass them after this file, so anything you wrote here would just be
+# overridden without warning.
+
+/**:
+  ros__parameters:
+
+    # ---- Attractor model -------------------------------------------------
+    # These values come from mean_field_model_3d.ipynb, which is the model of
+    # record. It's kept in sync by hand. To be specific about where each one
+    # comes from: n_sub, beta and dt are from the icosphere setup cell, v is
+    # from the connectivity cell, and sigma, kappa and u are from the
+    # symmetry-matched 3-target run. That last cell is the one whose targets
+    # match cf01/cf02/cf03 in crazyflies.yaml (1.286 m apart, 66 degrees
+    # pairwise), and it runs on the plain icosphere, so these values were tuned
+    # on the same mesh the server uses.
+
+    # Activation threshold in the tanh nonlinearity. The higher this is, the
+    # harder it is for a bump to form at all.
+    beta: 1.5
+
+    # Kernel width. This has to match the v the kernel cache was built with.
+    # The cached connectivity matrix M is derived from it, so the server refuses
+    # to start if the two disagree.
+    v: 0.3
+
+    # Noise amplitude, scaled by sqrt(dt) and by 1/sqrt(num_nodes) each step.
+    # The noise is what lets the bump break a tie between two equally good
+    # targets instead of sitting between them.
+    sigma: 1.0
+
+    # How concentrated the sensory input is. The input to each node falls off
+    # as exp(kappa * (cos(alpha) - 1)), where alpha is the geodesic distance
+    # from the target, so a higher kappa gives a tighter, more sharply
+    # localised input bump.
+    kappa: 10.0
+
+    # Recurrent gain on the M @ z term, meaning how strongly the network
+    # reinforces its own activation. This is what makes a bump self-sustaining
+    # once it forms.
+    u: 35.0
+
+    # Overall time constant multiplier on the update.
+    rate: 1.0
+
+    # Icosphere subdivision level, which determines how many nodes there are.
+    # It has to match the kernel cache or the server won't start. Raising it
+    # gets expensive quickly, because _generate_sensory_input is O(nodes x
+    # targets) on every tick.
+    #
+    # generate_kernel_cache.py reads n_sub and v from this file, so if you
+    # change them here and regenerate the cache, the two stay in step by
+    # themselves. Changing them here and forgetting to regenerate is what
+    # trips the server's cache check.
+    n_sub: 3
+
+    # The model's timestep. This is not the measured wall-clock dt, and that's
+    # deliberate: update() throws away the elapsed-time calculation and uses
+    # this fixed value instead, so the model advances by the same amount every
+    # tick no matter how the 50 Hz timer actually fires. Think of it as a
+    # numerical integration step rather than a duration.
+    #
+    # 0.1 is the notebook's value. This used to be 0.4, which advanced the
+    # network four times as far per tick and, because the noise scales with
+    # sigma * sqrt(dt), injected twice as much noise per step. At 50 Hz the
+    # bump now takes roughly four times as many ticks to form. That's still
+    # well under a second, but it's the one visible effect of matching the
+    # notebook.
+    dt: 0.1
+
+    # How concentrated the population vector has to be, on a scale of 0 to 1,
+    # before a heading gets published. This is the mean resultant length R from
+    # directional statistics: at R=1 every active node points the same way,
+    # which is a sharp well-formed bump, and at R=0 the activations cancel out,
+    # meaning the network hasn't committed to a direction yet. Below the
+    # threshold nothing is published at all, so the controller just keeps
+    # acting on whatever it last received.
+    bump_threshold: 0.3
+
+    # The default weight given to a target. Any target not named in the launch
+    # files' target_names / target_qualities pair gets this instead.
+    target_quality: 20.0
+
+    # How close another drone has to get, in metres, before it counts as too
+    # close. This only does anything when collision_avoidance is turned on;
+    # otherwise the server notices the drone is close and ignores it.
+    neighbour_radius: 0.3
+
+    # Off by default. When it's on, a neighbour inside neighbour_radius flips
+    # the x and y of the published heading, leaving z alone, so the drone backs
+    # straight out of whichever direction it was heading. Only the first
+    # neighbour inside the radius counts: flipping twice for two neighbours
+    # would cancel out and send the drone straight back in.
+    #
+    # Be aware that this is a blunt override rather than a real avoidance
+    # controller. It fights the attractor model instead of cooperating with it,
+    # so if the model keeps pushing back toward the neighbour the drone will
+    # oscillate around the boundary. It also hasn't been tested in flight as of
+    # 2026-08-17. One thing that does work cleanly: flipping the heading
+    # doesn't change its magnitude, so the bump_threshold gate still behaves
+    # normally, and if no bump has formed then nothing is published either way.
+    collision_avoidance: false
+
+    # ---- Timing ----------------------------------------------------------
+
+    # How often the model steps and publishes, in Hz.
+    update_rate: 50.0
+
+    # How long the node waits before it starts spinning, in seconds. This gives
+    # TF and crazyflie_server time to come up first, so the first update() has
+    # real transforms to look up rather than quietly failing every lookup.
+    startup_delay: 10.0
+
+    # The precomputed connectivity matrix, node positions and alphas.
+    # generate_kernel_cache.py builds this, and it reads the path from right
+    # here, so the two can't end up pointing at different files. The server
+    # won't start without it.
+    #
+    # Note that the path is relative, so it only resolves if you launch from
+    # ~/biodrone. Use an absolute path if you launch from anywhere else.
+    kernel_cache: 'src/spherical_ran/spherical_ran/kernel_cache.npz'
+
+    # ---- RViz visualization ----------------------------------------------
+
+    # Whether to publish the node sphere and heading arrow to <drone>/ran_viz
+    # at all.
+    ran_vis: true
+
+    # Radius of the sphere of nodes as drawn, in metres. This is purely
+    # cosmetic, since the model always works on a unit sphere.
+    vis_radius: 0.1
+
+    # Diameter of each node marker, in metres. The heading arrow is sized from
+    # this as well: the shaft is 1x, the head diameter 2x and the head length
+    # 3x.
+    vis_point_size: 0.007
+
+    # How far to shift the sphere along z, in metres, so it sits on the drone's
+    # body rather than at the origin of its frame.
+    vis_z_offset: 0.015
+
+    # The activation values that map to the cold and hot ends of the colormap.
+    # Anything outside this range is clamped, so if every node comes out the
+    # same colour, these are the numbers to widen.
+    vis_z_min: -1.0
+    vis_z_max: 2.0

@@ -37,19 +37,6 @@ A mismatch fails silently — there's no error, you just get no data.
 
 There's more on this in `src/ros2_fastDDS_vicon/vicon-subject-creation.md`.
 
-## Filtering
-
-`vicon_bridge.py` drops frames that would otherwise poison the EKF:
-
-| Rejected | Why |
-|---|---|
-| NaN quaternion | garbage attitude |
-| Non-unit quaternion (>0.1 off) | invalid rotation |
-| Translation exactly `(0,0,0)` | Vicon's "lost the object" output; forwarding it teleports the estimator to the origin |
-| Bit-identical repeat of previous frame | Tracker re-serves the last pose when tracking is lost; real tracking always has sub-mm noise |
-
-Short gaps aren't a problem, since the onboard Kalman filter coasts through
-them. A staleness watchdog warns after 0.25 s.
 
 ## Orientation mode
 

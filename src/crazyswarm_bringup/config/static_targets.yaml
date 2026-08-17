@@ -4,7 +4,7 @@
 # crazyflies.yaml: nothing here is simulated or armed, the
 # static_target_server just broadcasts a TF frame per target. The RAN server
 # discovers targets by TF lookup (mocap -> <name>, see
-# spherical_RAN_server_lloyd._get_targets_from_tf), so a plain frame is
+# spherical_RAN_server._get_targets_from_tf), so a plain frame is
 # indistinguishable from a real drone as far as the model is concerned.
 #
 # Positions below are exactly where the target drones end up *after takeoff*:

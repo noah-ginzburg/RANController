@@ -7,10 +7,11 @@ question you'd actually show up with, rather than to describe a package.
 
 | Guide | Answers |
 |---|---|
+| [`Full-Setup-and-Launch.md`](Full-Setup-and-Launch.md) | Vicon setup through to a flying drone, start to finish |
+| [`parameter-tuning.md`](parameter-tuning.md) | Which number do I change, and how do I regenerate the kernel cache? |
 | [`simulation.md`](simulation.md) | How do I run this without hardware? |
 | [`real-flight.md`](real-flight.md) | How do I fly an actual drone, safely? |
-| [`hardware-drone.md`](hardware-drone.md) | Radio channel/address, firmware, batteries |
-| [`vicon-setup.md`](vicon-setup.md) | Mocap subjects, markers, network |
+| [`hardware-drone-info.md`](hardware-drone-info.md) | Radio channel/address, firmware, batteries |
 | [`troubleshooting.md`](troubleshooting.md) | Symptom → cause → fix |
 | [`analysis.md`](analysis.md) | Bags, CSV export, plotting |
 

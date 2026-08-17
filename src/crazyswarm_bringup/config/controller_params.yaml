@@ -1,0 +1,123 @@
+# Tuning parameters for crazyflie_controller/controller_server.
+#
+# The launch files load this and hand it to every controller_server node.
+# Change a value here and relaunch; you don't need to touch any Python.
+#
+# The `/**` key means "apply this to whichever node is given the file". The
+# launch files rename each controller to controller_server_<drone>, so if we
+# matched on the exact node name we'd need a separate block for every drone.
+# If you do want to tune one drone differently, add a block with its exact name
+# (for example `controller_server_cf01:`) after the `/**` one. An exact name
+# match takes priority over the wildcard.
+#
+# A few parameters are deliberately not set here: drone_name, real, delta_z,
+# hover_speed, launch_height and teleop_enabled. The launch files work those
+# out per drone and pass them after this file, so anything you wrote here would
+# just be overridden without warning. They're launch arguments instead, which
+# you can list with:
+#   ros2 launch crazyswarm_bringup real_drone.launch.py -s
+
+/**:
+  ros__parameters:
+
+    # ---- Loop rate -------------------------------------------------------
+
+    # How often setpoints are published, in Hz. This also sets the dt cap in
+    # _step_goto and _step_yaw, since both of them clamp to two ticks' worth,
+    # so lowering it makes the GoTo ramps coarser as well as slower.
+    update_rate: 50.0
+
+    # ---- Speeds ----------------------------------------------------------
+
+    # The scalar that turns the RAN server's unit heading vector into an actual
+    # commanded velocity, in m/s (see des_heading_callback). It's the gain
+    # between the attractor model and the drone, which makes it the most useful
+    # knob in this file.
+    max_speed: 0.2
+
+    # How long a single teleop /cmd_vel message stays authoritative, in
+    # seconds. Until it expires the controller publishes the teleop velocity
+    # and abandons any GoTo in progress. Once it expires the controller's own
+    # commanded velocity takes back over.
+    teleop_timeout: 0.5
+
+    # ---- Takeoff ---------------------------------------------------------
+
+    # How long the onboard high-level commander is given to reach the target
+    # height, in seconds.
+    launch_duration: 5.0
+
+    # This is a safety limit. A takeoff is refused if the drone is already
+    # above this altitude in metres, because at that point it's either already
+    # flying or someone is holding it, and commanding a takeoff would spin the
+    # props up in their hand.
+    takeoff_max_ground_height: 0.1
+
+    # Takeoff counts as finished once the drone is within launch_complete_tol
+    # metres of the target height and its vertical speed has dropped to
+    # launch_complete_vel or below. Both conditions have to hold, so a drone
+    # still climbing through the target height doesn't count as arrived.
+    launch_complete_tol: 0.06
+    launch_complete_vel: 0.1
+
+    # ---- Landing ---------------------------------------------------------
+
+    # How long the descent is given, in seconds. The launch files'
+    # sigterm_timeout has to stay above this value. If it doesn't, Ctrl+C kills
+    # crazyflie_server and vicon_bridge partway through the descent and the
+    # drone lands blind. There's more on this in docs/real-flight.md.
+    land_duration: 5.0
+
+    # This is a safety limit, and it's easy to misread. The value is an
+    # absolute target altitude for a Land, not a distance to descend:
+    # crazyswarm2 passes it straight through to cflib's
+    # high_level_commander.land(absolute_height_m, ...). So 0.0 means the
+    # floor. A negative value would aim the descent planner underground, which
+    # is why the controller clamps this to 0.0 or above and logs an error if it
+    # finds one.
+    land_height: 0.0
+
+    # This is a safety limit. Below this altitude in metres, a land is refused
+    # and the motors are cut instead. The reason is that a Land activates the
+    # high-level commander, which spins the props up to fly a descent the drone
+    # doesn't need when it's already sitting on the ground.
+    #
+    # Raising this value makes Ctrl+C emergency-stop from higher up, so the
+    # drone drops instead of landing. Lowering it risks the props spinning up
+    # on the floor. 0.5 is the value that's been tested since 2026-08-13.
+    land_min_height: 0.5
+
+    # ---- GoTo ------------------------------------------------------------
+
+    # The duration handed to a high-level GoTo when the debug GUI doesn't
+    # specify one, in seconds.
+    goto_duration: 5.0
+
+    # How fast the GoTo setpoint may travel, in m/s. Note that this limits the
+    # setpoint, not the drone. The drone chases the setpoint, so ramping the
+    # setpoint slowly keeps the position error small and the motion smooth.
+    # Raise it too far and the drone lunges.
+    goto_speed: 0.4
+
+    # The same idea applied to yaw, in rad/s.
+    goto_yaw_speed: 0.8
+
+    # In sim, how close the setpoint has to get to goto_target and yaw_target
+    # before it counts as arrived.
+    goto_arrived_m: 0.02
+    goto_arrived_rad: 0.02
+
+    # On real hardware, how close the drone itself has to get, in metres,
+    # before the controller stops holding back its setpoint stream and resumes
+    # control.
+    goto_reached_m: 0.05
+
+    # On real hardware, how long to wait for arrival before giving up, in
+    # seconds. A drone that never reaches its target mustn't be able to wedge
+    # the controller with no way left to command it.
+    goto_timeout_s: 20.0
+
+    # ---- Misc ------------------------------------------------------------
+
+    # The crazyswarm2 group mask. 0 means "all drones".
+    group_mask: 0

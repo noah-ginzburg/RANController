@@ -1,12 +1,12 @@
 # Flying real drones
 
-Read [`hardware-drone.md`](hardware-drone.md) and [`vicon-setup.md`](vicon-setup.md)
+Read [`hardware-drone-info.md`](hardware-drone-info.md) and [`Full-Setup-and-Launch.md`](Full-Setup-and-Launch.md)
 first — this guide covers the run procedure only, and assumes the drone and the
 mocap system are already set up correctly.
 
 ## Preflight
 
-- [ ] Battery **fully charged** (4.2 V, not 3.7 V — see [`hardware-drone.md`](hardware-drone.md))
+- [ ] Battery **fully charged** (4.2 V, not 3.7 V — see [`hardware-drone-info.md`](hardware-drone-info.md))
 - [ ] Drone reachable at its configured URI (scan below)
 - [ ] Vicon Tracker running, subject tracked, no occlusion at the takeoff spot
 - [ ] Props intact, drone sitting level on the floor
@@ -23,7 +23,7 @@ print(cflib.crtp.scan_interfaces(0xE7E7E7E7E8))"
 ```
 
 A non-empty result means the drone is reachable. If it comes back empty, stop
-here and work through [`hardware-drone.md`](hardware-drone.md).
+here and work through [`hardware-drone-info.md`](hardware-drone-info.md).
 
 ## Run
 

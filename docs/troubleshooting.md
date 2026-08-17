@@ -12,7 +12,7 @@ highest-traffic phase of connecting, and it's where a marginal battery tends to
 collapse.
 
 **Check the battery voltage first.** Charge to 4.2 V and retry. See
-[`hardware-drone.md`](hardware-drone.md#brownouts).
+[`hardware-drone-info.md`](hardware-drone-info.md#brownouts).
 
 Other possibilities are that the drone is out of range, there's 2.4 GHz
 interference, or the antenna is damaged.
@@ -31,7 +31,7 @@ battery.
 
 If it instead shows ch 80 / `E7E7E7E7E7`, the config block really did get
 rewritten, and you'll need to set it back as described in
-[`hardware-drone.md`](hardware-drone.md#changing-or-viewing-it).
+[`hardware-drone-info.md`](hardware-drone-info.md#changing-or-viewing-it).
 
 If the dialog throws an error or shows zeros, suspect the EEPROM or I2C
 hardware.
@@ -140,7 +140,7 @@ If it comes back, check that those two values still satisfy
 
 Either Vicon tracking was lost, or the upstream receiver went silent. Check for
 occlusion, confirm `vicon_client` is actually running, and make sure the subject
-names match `drone_names`. See [`vicon-setup.md`](vicon-setup.md).
+names match `drone_names`. See [`Full-Setup-and-Launch.md`](Full-Setup-and-Launch.md).
 
 The Wifi connection may be unstable. Try re-launching the vicon receiver client, and rebooting the cameras.
 

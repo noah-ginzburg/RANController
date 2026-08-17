@@ -22,20 +22,11 @@ Z_DIR = YAW = 2
 
 
 class DroneController(Node):
-    UPDATE_RATE = 50.0  #hz
-    GROUP_MASK = 0  #0 = all drones
-    LAUNCH_DURATION = Duration(sec=5, nanosec=0)   #Time to reach the desired height
-    LAND_DURATION = Duration(sec=5, nanosec=0)   #Time to land
-    # ABSOLUTE target altitude for Land, not a descent distance -- crazyswarm2
-    # forwards it to cflib high_level_commander.land(absolute_height_m, ...).
-    # 0.0 = the floor. Never make this negative: it aims the planner underground.
-    LAND_HEIGHT = 0.0
-    # Below this altitude a land is refused in favour of cutting the motors: a
-    # Land activates the high-level commander, which spins the props up to fly a
-    # descent the drone does not need when it is already on the ground.
-    LAND_MIN_HEIGHT = 0.5
-    GOTO_DURATION = Duration(sec=5, nanosec=0)   #time for GOTO
-
+    # All the tuning values used to be class constants here. They now come from
+    # config/controller_params.yaml, loaded by _load_tuning_params(), which sets
+    # them as instance attributes under the same names. They're still read once
+    # at startup and never written again, so keeping the UPPER_CASE naming the
+    # flight logic already used is deliberate rather than an oversight.
 
     def __init__(self):
         super().__init__('drone_controller')
@@ -50,12 +41,21 @@ class DroneController(Node):
         # across the equilateral triangle instead of level with each other.
         # Non-target drones (e.g. cf09) leave this at the default 0.0.
         self.declare_parameter('delta_z', 0.0)
+        # Set by real_drone_teleop.launch.py. Teleop has no takeoff button, and
+        # /cmd_vel can only steer a drone that's already in the air, so when this
+        # is True the controller takes off by itself at startup. Every other
+        # bringup leaves it False and waits for the debug GUI instead.
+        self.declare_parameter('teleop_enabled', False)
 
         self.drone_name = self.get_parameter('drone_name').value
         self.hover_speed = self.get_parameter('hover_speed').value
         self.real = self.get_parameter('real').value
         self.launch_height = self.get_parameter('launch_height').value
         self.delta_z = self.get_parameter('delta_z').value
+        self.teleop_enabled = self.get_parameter('teleop_enabled').value
+
+        # Must run before anything reads UPDATE_RATE (the timer below).
+        self._load_tuning_params()
 
         self.cli = self.create_client(Takeoff, f'{self.drone_name}/takeoff')
         self.land_cli = self.create_client(Land, f'{self.drone_name}/land')
@@ -83,7 +83,6 @@ class DroneController(Node):
         self.now = 0.0
 
         self.w_abs_desired = 0.0
-        self.max_speed = 0.2
 
         self.pos = np.array([0.0, 0.0, 0.0])
         self.prev_pos = np.array([0.0, 0.0, 0.0])
@@ -133,7 +132,82 @@ class DroneController(Node):
         self.prev_trans = None
 
         self.last_teleop_msg_time = self.get_clock().now()
-        self.teleop_timeout = RCLDuration(seconds=0.5)
+
+    @staticmethod
+    def _to_duration(seconds):
+        """float seconds -> builtin_interfaces/Duration, for the crazyswarm2 srvs."""
+        seconds = float(seconds)
+        return Duration(sec=int(seconds),
+                        nanosec=int(round((seconds - int(seconds)) * 1e9)))
+
+    def _load_tuning_params(self):
+        """Declare and read everything in config/controller_params.yaml.
+
+        The defaults below are the values these were hardcoded to before the yaml
+        existed, so if the params file is missing or only partly filled in, the
+        controller behaves exactly as the old code did.
+        """
+        defaults = {
+            'update_rate': 50.0,
+            'max_speed': 0.2,
+            'teleop_timeout': 0.5,
+            'launch_duration': 5.0,
+            'takeoff_max_ground_height': 0.1,
+            'launch_complete_tol': 0.1,
+            'launch_complete_vel': 0.1,
+            'land_duration': 5.0,
+            'land_height': 0.0,
+            'land_min_height': 0.5,
+            'goto_duration': 5.0,
+            'goto_speed': 0.4,
+            'goto_yaw_speed': 0.8,
+            'goto_arrived_m': 0.02,
+            'goto_arrived_rad': 0.02,
+            'goto_reached_m': 0.05,
+            'goto_timeout_s': 20.0,
+            'group_mask': 0,
+        }
+        for name, default in defaults.items():
+            self.declare_parameter(name, default)
+        p = {name: self.get_parameter(name).value for name in defaults}
+
+        self.UPDATE_RATE = float(p['update_rate'])
+        self.GROUP_MASK = int(p['group_mask'])
+
+        self.max_speed = float(p['max_speed'])
+        self.teleop_timeout = RCLDuration(seconds=float(p['teleop_timeout']))
+
+        self.LAUNCH_DURATION = self._to_duration(p['launch_duration'])
+        self.TAKEOFF_MAX_GROUND_HEIGHT = float(p['takeoff_max_ground_height'])
+        self.LAUNCH_COMPLETE_TOL = float(p['launch_complete_tol'])
+        self.LAUNCH_COMPLETE_VEL = float(p['launch_complete_vel'])
+
+        # This is kept as a float as well as a Duration, because the Ctrl+C path
+        # sleeps for the length of the descent. Reading Duration.sec there would
+        # truncate a fractional value and wait less time than the land actually
+        # takes.
+        self.land_duration_s = float(p['land_duration'])
+        self.LAND_DURATION = self._to_duration(self.land_duration_s)
+
+        # A negative land height aims the descent planner below the floor, which
+        # means the controller keeps pushing down into the ground instead of
+        # levelling off. Refuse the value rather than fly it.
+        land_height = float(p['land_height'])
+        if land_height < 0.0:
+            self.get_logger().error(
+                f'land_height is {land_height} m, which aims the landing planner '
+                'below the floor. Clamping to 0.0 -- fix controller_params.yaml.')
+            land_height = 0.0
+        self.LAND_HEIGHT = land_height
+        self.LAND_MIN_HEIGHT = float(p['land_min_height'])
+
+        self.GOTO_DURATION = self._to_duration(p['goto_duration'])
+        self.GOTO_SPEED = float(p['goto_speed'])
+        self.GOTO_YAW_SPEED = float(p['goto_yaw_speed'])
+        self.GOTO_ARRIVED_M = float(p['goto_arrived_m'])
+        self.GOTO_ARRIVED_RAD = float(p['goto_arrived_rad'])
+        self.GOTO_REACHED_M = float(p['goto_reached_m'])
+        self.GOTO_TIMEOUT_S = float(p['goto_timeout_s'])
 
     def send_arm_req(self, arm: bool):
         # Only the cflib/cpp (real) backends provide an arm service; the sim backend
@@ -194,20 +268,9 @@ class DroneController(Node):
         return self.future.result()
 
 
-    # Refuse a takeoff if the drone is already this far off the floor. It is
-    # either already flying or being held, and commanding a takeoff from there
-    # spins the motors in someone's hand.
-    TAKEOFF_MAX_GROUND_HEIGHT = 0.1  # m
-
-    # How fast the GoTo setpoint is allowed to travel, m/s. This limits the
-    # SETPOINT, not the drone: the drone chases the setpoint, so a slow ramp
-    # keeps the position error small and the motion smooth.
-    GOTO_SPEED = 0.4
-    GOTO_ARRIVED_M = 0.02
-    GOTO_YAW_SPEED = 0.8       # rad/s the yaw setpoint may travel
-    GOTO_ARRIVED_RAD = 0.02
-    GOTO_REACHED_M = 0.05      # real: "close enough" to the GoTo target
-    GOTO_TIMEOUT_S = 20.0      # real: give up waiting, never block forever
+    # TAKEOFF_MAX_GROUND_HEIGHT, GOTO_SPEED, GOTO_ARRIVED_M, GOTO_YAW_SPEED,
+    # GOTO_ARRIVED_RAD, GOTO_REACHED_M and GOTO_TIMEOUT_S all live in
+    # config/controller_params.yaml now. _load_tuning_params() reads them.
 
     def _await_goto(self, now):
         """REAL only. True means 'still travelling - update() must not publish'.
@@ -636,7 +699,8 @@ class DroneController(Node):
             #     self.get_logger().info(f"z_pos: {self.pos[Z_DIR]}")
             #     self.get_logger().info(f"launch height: {self.launch_height + self.delta_z}")
 
-            if self.pos[Z_DIR] >= (self.launch_height + self.delta_z - 0.1) and self.vel[Z_DIR] <= 0.1:
+            if (self.pos[Z_DIR] >= (self.launch_height + self.delta_z - self.LAUNCH_COMPLETE_TOL)
+                    and self.vel[Z_DIR] <= self.LAUNCH_COMPLETE_VEL):
                 self.get_logger().info(f'Drone {self.drone_name} completed launch, current height: {self.pos[Z_DIR]}')
                 return True
     
@@ -654,16 +718,38 @@ def main(args=None):
             # None means no arm server responded — normal in sim, already warned above.
             drone_controller.get_logger().info('Arm skipped (no arm service); continuing to takeoff.')
 
-    target_height = drone_controller.launch_height + drone_controller.delta_z
-    # response = drone_controller.send_takeoff_req(group_mask=drone_controller.GROUP_MASK, height=target_height, duration=drone_controller.LAUNCH_DURATION)
-    response = None
+    if drone_controller.teleop_enabled:
+        # Teleop has no takeoff button, and /cmd_vel can only steer a drone
+        # that's already in the air, so take off here. send_takeoff_req is also
+        # what sets launch_requested, which is the interlock that authorises the
+        # 50 Hz setpoint stream. Without a takeoff the teleop keys do nothing at
+        # all.
+        target_height = drone_controller.launch_height + drone_controller.delta_z
+        drone_controller.get_logger().info(
+            f'teleop_enabled: auto-taking off {drone_controller.drone_name} to '
+            f'{target_height:.2f} m. Do not touch the keyboard until the climb '
+            'finishes -- a /cmd_vel message clears taking_off and starts the '
+            'setpoint stream against the high-level commander.')
+        response = drone_controller.send_takeoff_req(
+            group_mask=drone_controller.GROUP_MASK,
+            height=target_height,
+            duration=drone_controller.LAUNCH_DURATION)
 
-    if response is not None:
-        drone_controller.get_logger().info('Takeoff command executed successfully')
+        if response is not None:
+            drone_controller.get_logger().info('Auto-takeoff command accepted.')
+        else:
+            drone_controller.get_logger().error(
+                'Auto-takeoff service call returned no response; the drone is '
+                'probably still on the ground. Check crazyflie_server.')
     else:
-        drone_controller.get_logger().error('Takeoff service call failed')
+        # This isn't a failure, it's the normal path. The debug GUI commands the
+        # takeoff, and that's what sets launch_requested.
+        drone_controller.get_logger().info(
+            f'Auto-takeoff disabled for {drone_controller.drone_name} '
+            '(teleop_enabled=false). Waiting for a takeoff command from the '
+            'debug GUI.')
 
-    drone_controller.get_logger().info("trying to spin")
+    drone_controller.get_logger().info('Spinning.')
 
     try:
         rclpy.spin(drone_controller)
@@ -690,7 +776,7 @@ def main(args=None):
                 land_height = drone_controller.LAND_HEIGHT
                 land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=land_height, duration=drone_controller.LAND_DURATION)
                 drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land from z={z:.3f} m to height={land_height}.')
-                if land_resp is not None: time.sleep(drone_controller.LAND_DURATION.sec)
+                if land_resp is not None: time.sleep(drone_controller.land_duration_s)
             else:
                 # NOTE: this branch previously called self.get_logger() -- but
                 # there is no `self` in main(), so it raised NameError before

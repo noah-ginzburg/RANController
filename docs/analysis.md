@@ -83,7 +83,7 @@ its own GUI. See `src/ros2_unbag/README.md`. It was what we used before the
    quaternion-sign issue.
 4. **Where the log ends.** An abrupt stop mid-flight with no land command
    suggests a brownout rather than a control fault. See
-   [`hardware-drone.md`](hardware-drone.md#brownouts).
+   [`hardware-drone-info.md`](hardware-drone-info.md#brownouts).
 5. **Inverted yaw and pitch**, which come from the Vicon x axis not being
    aligned with the drone's x axis.
 
