@@ -45,7 +45,7 @@ class SphericalRANServer(Node):
         super().__init__('spherical_RAN_server')
         self.declare_parameter('drone_name', 'cf01')
         self.declare_parameter('ran_vis', True)
-        # Set by real_drone_teleop.launch.py. Under teleop the person at the
+        # Set by real_drone.launch.py teleop:=true. Under teleop the person at the
         # keyboard owns the drone, so the model must not be commanding a heading
         # at the same time; the controller would act on both and end up fighting
         # the keyboard. The model still runs and still draws in RViz, and only

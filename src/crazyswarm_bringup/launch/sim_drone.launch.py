@@ -1,7 +1,7 @@
 import os
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction, SetLaunchConfiguration
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction, SetLaunchConfiguration, PushLaunchConfigurations, PopLaunchConfigurations
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from ament_index_python.packages import get_package_share_directory
@@ -71,7 +71,9 @@ def launch_controllers(context, *args, **kwargs):
     ran_drones = [name.strip() for name in ran_str.split(',') if name.strip()]
     target_names = [name.strip() for name in target_names_str.split(',') if name.strip()]
     target_qualities = [float(q.strip()) for q in target_qualities_str.split(',') if q.strip()]
-    hover_speed = LaunchConfiguration('hover_speed_real').perform(context) if real else LaunchConfiguration('hover_speed_sim').perform(context)
+    # Sim only. On real hardware set_speeds never applies it, so there is
+    # nothing to configure and the node just gets 0.0.
+    hover_speed = 0.0 if real else float(LaunchConfiguration('hover_speed_sim').perform(context))
     launch_height = float(LaunchConfiguration('launch_height').perform(context))
     delta_z_by_name = _load_delta_z(drone_names)
 
@@ -97,6 +99,12 @@ def launch_controllers(context, *args, **kwargs):
     target_qualities = target_qualities + static_qualities
     ran_targets = drone_names + static_names
 
+    # There is no teleop in sim -- no `teleop` argument is declared and no
+    # keyboard window is started -- so the RAN server is pinned rather than left
+    # on its own declare_parameter default, and it keeps publishing its heading.
+    teleop_enabled = False
+    auto_launch = LaunchConfiguration('auto_launch').perform(context) == 'true'
+
     actions = []
     if static_names:
         actions.append(Node(
@@ -117,8 +125,9 @@ def launch_controllers(context, *args, **kwargs):
             name=f'controller_server_{name}',
             output='screen',
             parameters=[controller_params,
-                        {'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real},
-                        {'launch_height': launch_height}, {'delta_z': delta_z_by_name[name]}],
+                        {'drone_name': name}, {'hover_speed': hover_speed}, {'real': real},
+                        {'launch_height': launch_height}, {'delta_z': delta_z_by_name[name]},
+                        {'auto_launch': auto_launch}],
         ))
         if name in ran_drones:
             actions.append(Node(
@@ -127,7 +136,8 @@ def launch_controllers(context, *args, **kwargs):
                 name=f'spherical_RAN_server_{name}',
                 output='screen',
                 parameters=[ran_params,
-                            {'drone_name': name}, {'all_drones': ran_targets}, {'target_names': target_names}, {'target_qualities': target_qualities}],
+                            {'drone_name': name}, {'all_drones': ran_targets}, {'target_names': target_names}, {'target_qualities': target_qualities},
+                            {'teleop_enabled': teleop_enabled}],
             ))
         # One GUI per drone, outside the ran_drones check so it always runs.
         actions.append(Node(
@@ -149,7 +159,10 @@ def generate_launch_description():
 
     real_arg = DeclareLaunchArgument('real', default_value=args['real'])
     hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value=args['hover_speed_sim'])
-    hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value=args['hover_speed_real'])
+    # Same argument as on the real stack, minus the teleop coupling: nothing in
+    # sim moves its default, so auto_launch:='false' is the only way to get a
+    # sim drone that waits for the debug GUI.
+    auto_launch_arg = DeclareLaunchArgument('auto_launch', default_value=args['auto_launch'])
     launch_height_arg = DeclareLaunchArgument('launch_height', default_value=args['launch_height'])
     drone_names_arg = DeclareLaunchArgument('drone_names', default_value=args['drone_names'])
     ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value=args['ran_drones'])
@@ -200,6 +213,12 @@ def generate_launch_description():
             'mocap': 'False',
             'rviz': 'True',
             'gui': 'False',
+            # Off for the same reason real_drone.launch.py turns it off: this is
+            # crazyswarm2's gamepad stack (joy_node + their teleop node), a
+            # second commander on the drone. Pinning it here also stops a stray
+            # `teleop:=true` on the command line -- which means nothing to this
+            # file -- from quietly starting it.
+            'teleop': 'False',
             'rviz_config_file': LaunchConfiguration('rviz_config_file'),
         }.items()
     )
@@ -214,7 +233,7 @@ def generate_launch_description():
         SetLaunchConfiguration('sigkill_timeout', args['sigkill_timeout']),
         real_arg,
         hover_speed_sim_arg,
-        hover_speed_real_arg,
+        auto_launch_arg,
         launch_height_arg,
         drone_names_arg,
         ran_drones_arg,
@@ -226,6 +245,14 @@ def generate_launch_description():
         controller_params_arg,
         ran_params_arg,
         rviz_config_arg,
+        # crazyswarm2's launch_arguments are NOT scoped to the include: each
+        # one stays set in this file's configuration afterwards. `teleop`
+        # collides (theirs is the gamepad stack, ours is the keyboard), so
+        # without this push/pop the 'teleop': 'False' above would overwrite the
+        # `teleop` argument for everything visited later -- the keyboard window
+        # and launch_controllers included.
+        PushLaunchConfigurations(),
         crazyswarm2,
+        PopLaunchConfigurations(),
         TimerAction(period=3.0, actions=[crazyflie_controllers]),
     ])

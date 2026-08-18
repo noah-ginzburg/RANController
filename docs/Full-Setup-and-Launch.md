@@ -110,7 +110,7 @@ The land duration and height thresholds are `LAND_DURATION`, `LAND_HEIGHT`, and
 
 **Launching the drone**:
 1. Ensure workspace is built and sourced
-2. Run ``ros2 launch crazyswarm_bringup real_drone_teleop.launch.py``. 
+2. Run ``ros2 launch crazyswarm_bringup real_drone.launch.py teleop:=true``. 
     - A teleop window, GUI menu, and RViz will open up. 
     - The drone will only be moveable by teleop, i.e. the spherical attractor netowkr will not publish, and the drone will not auto-launch
     - Look at the GUI menu, and ensure **Battery Voltage** is sufficiently higher than *3.7 V*, position error is not jumping too much, and the vicon is not dropping frames too much

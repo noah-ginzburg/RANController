@@ -41,18 +41,18 @@ class DroneController(Node):
         # across the equilateral triangle instead of level with each other.
         # Non-target drones (e.g. cf09) leave this at the default 0.0.
         self.declare_parameter('delta_z', 0.0)
-        # Set by real_drone_teleop.launch.py. Teleop has no takeoff button, and
-        # /cmd_vel can only steer a drone that's already in the air, so when this
-        # is True the controller takes off by itself at startup. Every other
-        # bringup leaves it False and waits for the debug GUI instead.
-        self.declare_parameter('teleop_enabled', False)
+        # Take off at startup instead of waiting for a takeoff command. On by
+        # default; real_drone.launch.py teleop:=true turns it off, so the
+        # keyboard never has to race the climb and the takeoff is yours to
+        # command from the debug GUI.
+        self.declare_parameter('auto_launch', False)
 
         self.drone_name = self.get_parameter('drone_name').value
         self.hover_speed = self.get_parameter('hover_speed').value
         self.real = self.get_parameter('real').value
         self.launch_height = self.get_parameter('launch_height').value
         self.delta_z = self.get_parameter('delta_z').value
-        self.teleop_enabled = self.get_parameter('teleop_enabled').value
+        self.auto_launch = self.get_parameter('auto_launch').value
 
         # Must run before anything reads UPDATE_RATE (the timer below).
         self._load_tuning_params()
@@ -68,8 +68,8 @@ class DroneController(Node):
         self.emergency_cli = self.create_client(Empty, f'{self.drone_name}/emergency')
 
 
-        while not self.cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(f'{self.drone_name}/takeoff service not available, waiting again...')
+        while not self.cli.wait_for_service(timeout_sec=2.0):
+            self.get_logger().info(f'{self.drone_name}/takeoff service not available, drone might be disconneted. Waiting again...')
 
         self.cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         self.des_heading_sub = self.create_subscription(Vector3, f'{self.drone_name}/desired_heading', self.des_heading_callback, 10)
@@ -96,6 +96,11 @@ class DroneController(Node):
         # GOTO_SPEED instead of jumping, otherwise the setpoint steps and the
         # drone lunges at it.
         self.goto_target = None
+        # Ramp rates for the CURRENT sim GoTo. Normally the goto_speed /
+        # goto_yaw_speed parameters, but a GUI-supplied duration replaces them
+        # with distance/duration so the move takes the seconds asked for.
+        self.goto_speed = self.GOTO_SPEED
+        self.goto_yaw_speed = self.GOTO_YAW_SPEED
         # Commanded yaw (rad). None = leave orientation as TF reports it.
         self.yaw_desired = None
         self.yaw_target = None
@@ -299,7 +304,7 @@ class DroneController(Node):
 
         if now > self.goto_wait_deadline:
             self.get_logger().error(
-                f'GoTo: TIMED OUT after {self.GOTO_TIMEOUT_S:.0f}s without reaching '
+                'GoTo: TIMED OUT without reaching '
                 f'{self.goto_wait}; resuming control so the drone stays commandable.')
             self.pos_desired = None
             self.goto_wait = None
@@ -326,7 +331,7 @@ class DroneController(Node):
         if self.yaw_target is not None and dt > 0.0:
             dt = min(dt, 2.0 / self.UPDATE_RATE)
             err = (self.yaw_target - self.yaw_desired + np.pi) % (2 * np.pi) - np.pi
-            step = self.GOTO_YAW_SPEED * dt
+            step = self.goto_yaw_speed * dt
             if abs(err) <= max(step, self.GOTO_ARRIVED_RAD):
                 self.yaw_desired = self.yaw_target
                 self.yaw_target = None
@@ -363,7 +368,7 @@ class DroneController(Node):
                 f'drone {self.drone_name} hovering at {self.pos_desired}.')
 
     def _step_goto(self, dt):
-        """Walk pos_desired toward goto_target at GOTO_SPEED."""
+        """Walk pos_desired toward goto_target at the active GoTo speed."""
         if self.goto_target is None or dt <= 0.0:
             return
         if self.pos_desired is None:
@@ -375,7 +380,7 @@ class DroneController(Node):
 
         delta = self.goto_target - self.pos_desired
         dist = float(np.linalg.norm(delta))
-        step = self.GOTO_SPEED * dt
+        step = self.goto_speed * dt
         if dist <= max(step, self.GOTO_ARRIVED_M):
             self.pos_desired = self.goto_target.copy()
             self.goto_target = None
@@ -497,10 +502,28 @@ class DroneController(Node):
                 self.yaw_desired = self._yaw_from_quat(
                     self.movement_msg.pose.orientation)
             self.yaw_target = float(msg.yaw)
+
+            # There is no high-level planner on this path, so a requested
+            # duration has to become a ramp rate: cover the whole distance (and
+            # the whole yaw error) in exactly those seconds. Without one, fall
+            # back to the goto_speed / goto_yaw_speed parameters.
+            self.goto_speed = self.GOTO_SPEED
+            self.goto_yaw_speed = self.GOTO_YAW_SPEED
+            if msg.duration > 0.0:
+                start = self.pos_desired if self.pos_desired is not None else self.pos
+                dist = float(np.linalg.norm(self.goto_target - start))
+                yaw_err = abs((self.yaw_target - self.yaw_desired + np.pi)
+                              % (2 * np.pi) - np.pi)
+                # A zero rate would stall the ramp forever, so keep the
+                # parameter value when there is nothing to cover.
+                if dist > 0.0:
+                    self.goto_speed = dist / float(msg.duration)
+                if yaw_err > 0.0:
+                    self.goto_yaw_speed = yaw_err / float(msg.duration)
             self.get_logger().info(
                 f'GoTo (sim setpoint): [{msg.x:.3f} {msg.y:.3f} {msg.z:.3f}] '
                 f'yaw={np.degrees(msg.yaw):.1f} deg, ramping at '
-                f'{self.GOTO_SPEED} m/s / {self.GOTO_YAW_SPEED} rad/s')
+                f'{self.goto_speed:.3f} m/s / {self.goto_yaw_speed:.3f} rad/s')
             return
 
         if not self.goto_cli.service_is_ready():
@@ -518,7 +541,10 @@ class DroneController(Node):
         req.goal.y = float(msg.y)
         req.goal.z = float(msg.z)
         req.yaw = float(msg.yaw)
-        req.duration = Duration(sec=int(msg.duration), nanosec=0) if msg.duration > 0 else self.GOTO_DURATION
+        # int(msg.duration) threw away the fraction, so 2.5 s flew as 2 s and
+        # anything under 1 s became an instant (0 s) jump.
+        req.duration = (self._to_duration(msg.duration) if msg.duration > 0
+                        else self.GOTO_DURATION)
 
         # call_async, never spin_until_future_complete: we are inside a
         # subscription callback and spinning here re-enters the executor.
@@ -527,12 +553,17 @@ class DroneController(Node):
         # Hand the drone to the high-level commander and go quiet until it
         # arrives at the position from this very message.
         self.goto_wait = np.array([msg.x, msg.y, msg.z], dtype=float)
+        # The watchdog has to outlast the planner: a 30 s GoTo with a 20 s
+        # timeout would yank control back mid-flight. Grant the flight time
+        # plus goto_timeout_s of slack.
+        timeout_s = (float(req.duration.sec) + req.duration.nanosec * 1e-9
+                     + self.GOTO_TIMEOUT_S)
         self.goto_wait_deadline = self.get_clock().now() + RCLDuration(
-            seconds=self.GOTO_TIMEOUT_S)
+            seconds=timeout_s)
         self.pos_desired = None
         self.get_logger().info(
             f'GoTo: holding all other control until {self.goto_wait} is reached '
-            f'(timeout {self.GOTO_TIMEOUT_S:.0f}s).')
+            f'(timeout {timeout_s:.0f}s).')
 
     def cmd_vel_callback(self, msg: Twist):
         self.taking_off = False
@@ -718,23 +749,19 @@ def main(args=None):
             # None means no arm server responded — normal in sim, already warned above.
             drone_controller.get_logger().info('Arm skipped (no arm service); continuing to takeoff.')
 
-    if drone_controller.teleop_enabled:
-        # Teleop has no takeoff button, and /cmd_vel can only steer a drone
-        # that's already in the air, so take off here. send_takeoff_req is also
-        # what sets launch_requested, which is the interlock that authorises the
-        # 50 Hz setpoint stream. Without a takeoff the teleop keys do nothing at
-        # all.
+    if drone_controller.auto_launch:
+        # send_takeoff_req is also what sets launch_requested, the interlock
+        # that authorises the 50 Hz setpoint stream -- so until a takeoff has
+        # happened, nothing else can command the drone.
         target_height = drone_controller.launch_height + drone_controller.delta_z
         drone_controller.get_logger().info(
-            f'teleop_enabled: auto-taking off {drone_controller.drone_name} to '
-            f'{target_height:.2f} m. Do not touch the keyboard until the climb '
-            'finishes -- a /cmd_vel message clears taking_off and starts the '
-            'setpoint stream against the high-level commander.')
+            f'auto_launch: taking off {drone_controller.drone_name} to '
+            f'{target_height:.2f} m.')
         response = drone_controller.send_takeoff_req(
             group_mask=drone_controller.GROUP_MASK,
             height=target_height,
             duration=drone_controller.LAUNCH_DURATION)
-
+            
         if response is not None:
             drone_controller.get_logger().info('Auto-takeoff command accepted.')
         else:
@@ -742,12 +769,12 @@ def main(args=None):
                 'Auto-takeoff service call returned no response; the drone is '
                 'probably still on the ground. Check crazyflie_server.')
     else:
-        # This isn't a failure, it's the normal path. The debug GUI commands the
-        # takeoff, and that's what sets launch_requested.
+        # This isn't a failure, it's the teleop path. The debug GUI commands
+        # the takeoff, and that's what sets launch_requested.
         drone_controller.get_logger().info(
             f'Auto-takeoff disabled for {drone_controller.drone_name} '
-            '(teleop_enabled=false). Waiting for a takeoff command from the '
-            'debug GUI.')
+            '(auto_launch=false). Waiting for a takeoff command from the '
+            'debug GUI, or from ros2 teleop twist.')
 
     drone_controller.get_logger().info('Spinning.')
 

@@ -1,7 +1,7 @@
 # Tuning parameters for crazyflie_controller/controller_server.
 #
 # The launch files load this and hand it to every controller_server node.
-# Change a value here and relaunch; you don't need to touch any Python.
+# Change a value here and relaunch; you don't need to touch any Python. 
 #
 # The `/**` key means "apply this to whichever node is given the file". The
 # launch files rename each controller to controller_server_<drone>, so if we
@@ -11,7 +11,7 @@
 # match takes priority over the wildcard.
 #
 # A few parameters are deliberately not set here: drone_name, real, delta_z,
-# hover_speed, launch_height and teleop_enabled. The launch files work those
+# hover_speed, launch_height and auto_launch. The launch files work those
 # out per drone and pass them after this file, so anything you wrote here would
 # just be overridden without warning. They're launch arguments instead, which
 # you can list with:

@@ -10,9 +10,9 @@
 #
 #   ros2 launch crazyswarm_bringup real_drone.launch.py drone_names:=cf01
 #
-# `common` applies to every launch file. The `real`, `sim` and `teleop` sections
-# are then layered on top, so a value in one of those overrides `common` for
-# that launch file only.
+# `common` applies to every launch file. The `real` and `sim` sections are then
+# layered on top, so a value in one of those overrides `common` for that launch
+# file only.
 #
 # Write values as strings. The launch files compare them as text, so `'true'`
 # and `'false'` must be lowercase to match. The one exception is `rviz`, which
@@ -40,6 +40,16 @@ common:
 
   # Base height every drone takes off to, in metres. Each drone's delta_z from
   # crazyflies.yaml is added on top of this.
+  # 
+  # IMPORTANT: a bug was found with crazyflie's launch service that always undershoots the desired launch 
+  # height by about 0.06m, IN SIM. This comes from logging the final launch height after
+  # crazyflie's service /cfXX/Takeoff is called. The offset was empirically observed.
+  # This is important because the drone may not fly perfectly level towards it's targets, therefore 
+  # creating a bias. For example, if it flies with a slight negative pitch, it will prefer to choose the 
+  # bottom targets because the angular difference between targets is no longer equal. 
+  # The current mitigation strategy is to increase this value by 0.06 and tune the simulation
+  # hover speed to get the drone flying straight, with 0 pitch, to remove target bias. An attempt at an
+  # altitude pid was made, but it made things worse.
   launch_height: '0.5'
 
   # ---- Targets ---------------------------------------------------------
@@ -60,7 +70,7 @@ common:
   # qualities are numbers.
   #
   #   target_names:     'cf01,cf02'
-  #   target_qualities: '40.0,10.0'
+  #   target_qualities: '40.0,20.0'
   #
   # would make cf01 twice as attractive as the default and cf02 half as
   # attractive. Leave both empty and every target keeps the default weight.
@@ -72,12 +82,18 @@ common:
   #     own -- you only need your own two entries to match each other.
   #   - A name that isn't in drone_names or static_targets.yaml does nothing at
   #     all. It won't error, it just never gets looked up.
+  # 
+  # Additionally, changing drone target positions requires you to go into crazyflies.yaml in the crazyswarm2 package
+  # and enable/set the initial position of all of the drones. The drone positions will be set in sim, 
+  # but the vicon should override their positions in real life after vicon_bridge.py 
+  # manually publishes their tf transforms. You must set 'enabled = true' for the drones in the list to be picked up
+  # by ROS. For static targets, same idea, but in static_targes.yaml in the config folder of this package
   target_names: ''
   target_qualities: ''
 
   # Use the invisible draggable markers from config/static_targets.yaml instead
   # of real target drones. Recommended over flying real targets.
-  use_static_targets: 'false'
+  use_static_targets: 'true'
 
   # Optional override of the `quality` values in static_targets.yaml, applied
   # positionally in the order the targets appear in that file. Comma-separated,
@@ -86,15 +102,15 @@ common:
   #
   #   static_target_qualities: '25.0'            # all targets -> 25.0
   #   static_target_qualities: '40.0,20.0,20.0'  # per target, in file order
-  static_target_qualities: ''
+  static_target_qualities: '20.0'
 
-  # An initial hover speed guess. On real hardware this is unused (set_speeds
-  # only applies it in sim), and in sim the PID takes over from it.
-  hover_speed_real: '0.0'
-  hover_speed_sim: '0.0'
+  # Take off as soon as the controller starts, instead of waiting for a takeoff
+  # command from the debug GUI. Independent of `teleop`
+  auto_launch: 'false'
 
+#Real flight launch params
 real:
-  real: 'true'
+  real: 'true' #switches the cf server backend to cflib (proper one for connecting to drone) instead of sim backend
 
   # Record a rosbag to bags/flight_<timestamp>/.
   record: 'true'
@@ -102,10 +118,27 @@ real:
   # Capital T on purpose -- see the note at the top of this file.
   rviz: 'True'
 
-  # Set true by real_drone_teleop.launch.py, which makes the controller take
-  # off by itself and stops the RAN server publishing a heading. Leave it false
-  # for normal flights.
-  teleop_enabled: 'false'
+  # Manual keyboard flight. With teleop:='true' the launch file also opens a
+  # teleop_twist_keyboard window, controller_server skips its auto-takeoff (you
+  # command it from the debug GUI, and /cmd_vel can only steer a drone that is
+  # already airborne), and the RAN server stops publishing
+  # <drone>/desired_heading so the model can't fight the keyboard. Leave it
+  # false for normal flights.
+  #
+  # NOTE: unrelated to the `teleop` argument real_drone.launch.py passes into
+  # crazyswarm2's own launch.py, which is its gamepad stack and stays off.
+  teleop: 'true'
+
+  # teleop_twist_keyboard's own speed and turn rate, used only when
+  # teleop:='true'. Its stock speed of 0.5 m/s is brisk for a Crazyflie
+  # indoors, so this matches max_speed in controller_params.yaml instead.
+  teleop_speed: '0.2'
+  teleop_turn: '0.5'
+
+  # Sourced inside the teleop terminal. gnome-terminal is sometimes
+  # dbus-activated, and when it is, the new window doesn't inherit this
+  # process's environment.
+  ws_setup: '~/biodrone/install/setup.bash'
 
   # On Ctrl+C, launch sends SIGINT, then SIGTERM after sigterm_timeout, then an
   # uncatchable SIGKILL sigkill_timeout later.
@@ -124,8 +157,10 @@ real:
 sim:
   real: 'false'
 
-  # Sim needs a nonzero hover speed to get off the ground before the PID
-  # settles; real hardware doesn't use this at all.
+  # IMPORTANT: a bug was found with crazyflie's physics in simulation, where it slowly falls due to gravity over time.
+  # I believe it is dependent on the simulation clock speed. This is the last value that got it relatively stable (not drifting
+  # up or down). This can affect whether the drone flies straight or not to the targets, and if it flies with a positive/
+  # negative pitch, it can introduce a bias becaues the angular difference between targets is no longer equal.
   hover_speed_sim: '0.168'
 
   # The sim workflow is built around the static targets, so they're on here.
@@ -136,14 +171,11 @@ sim:
   sigterm_timeout: '2'
   sigkill_timeout: '2'
 
-teleop:
-  # teleop_twist_keyboard's own speed and turn rate. Its stock speed of 0.5 m/s
-  # is brisk for a Crazyflie indoors, so this matches max_speed in
-  # controller_params.yaml instead.
-  teleop_speed: '0.2'
-  teleop_turn: '0.5'
-
-  # Sourced inside the teleop terminal. gnome-terminal is sometimes
-  # dbus-activated, and when it is, the new window doesn't inherit this
-  # process's environment.
-  ws_setup: '~/biodrone/install/setup.bash'
+  # There is no teleop MODE in sim: sim_drone.launch.py declares no `teleop`
+  # argument, opens no keyboard window, and pins the RAN server's
+  # teleop_enabled to false. Listed here only so that is obvious.
+  # However you should be able to run teleop twist and move the drone in sim --
+  # the controller subscribes to /cmd_vel either way, so just start
+  # teleop_twist_keyboard yourself. Pair it with auto_launch:='false' if you
+  # don't want the drone climbing on its own first.
+  teleop: 'false'

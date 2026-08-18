@@ -166,3 +166,6 @@ pkill -f ros2 && ros2 daemon stop && ros2 daemon start
 This command forcefully kills all ros2 processes and restarts the daemon. Resource all your terminals that you were using before and everything will work again
 
 ---
+## Drone is Not Receiving any Info
+
+Something is blocking packets from being sent/received, or decoded. An attempt to switch the battery may help, but reflashing the firmware is the best solution. Download `cfclient` with `sudo apt install cfclient`. Click Connect-->Bootloader and connect to the drone's URI with the CrazyRadio. Hit scan once the URI is typed in, and if its detected, hit connect. Then, underneath, click on cf, click on the 2026.04 firmware file, and hit program. Wait 30 seconds for firmware to be reflashed.

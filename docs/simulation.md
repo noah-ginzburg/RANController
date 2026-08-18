@@ -50,8 +50,8 @@ branch in `_debug_goto` (`controller_server.py:397`) is where this happens.
 
 - **Sim won't catch anything mocap-related.** EKF divergence, occlusion, yaw
   drift, and external-pose fusion problems only show up on real hardware.
-- `hover_speed_sim` and `hover_speed_real` are separate arguments, and setting
-  the wrong one for your run just silently does nothing.
+- `hover_speed_sim` is sim-only. Real hardware has no hover-speed argument at
+  all: `set_speeds` never applies one there, so the controller is handed 0.0.
 
 ## See also
 

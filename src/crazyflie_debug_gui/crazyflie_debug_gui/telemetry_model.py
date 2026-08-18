@@ -712,7 +712,9 @@ class TelemetryModel(Node):
     def send_land(self):
         self._send(DebugFlags.CMD_LAND)
 
-    def send_goto(self, x, y, z, yaw=0.0, duration=2.0):
+    def send_goto(self, x, y, z, yaw=0.0, duration=0.0):
+        # duration=0.0 means "unset": the controller server then uses its own
+        # goto_duration parameter instead of a number baked in here.
         self._send(DebugFlags.CMD_GOTO, x=x, y=y, z=z, yaw=yaw, duration=duration)
 
     def send_estop(self):

@@ -450,6 +450,11 @@ class DroneWindow(QWidget):
         self.goto_y = QLineEdit("0.0")
         self.goto_z = QLineEdit("0.0")
         self.goto_theta = QLineEdit("0.0")
+        # Blank = "use the controller's goto_duration parameter". Only a number
+        # typed here overrides it, so the yaml stays the single default.
+        self.goto_dur = QLineEdit("")
+        self.goto_dur.setPlaceholderText("default")
+        self.goto_dur.setMaximumWidth(70)
         goto_btn = QPushButton("Go To")
         goto_btn.setStyleSheet("background-color: #2196f3; color: white; font-weight: bold;")
         goto_btn.setMinimumWidth(400)
@@ -464,6 +469,8 @@ class DroneWindow(QWidget):
         goto_row.addWidget(self.goto_z)
         goto_row.addWidget(QLabel("θ°"))     # degrees; converted to rad on send
         goto_row.addWidget(self.goto_theta)
+        goto_row.addWidget(QLabel("t s"))    # blank -> controller default
+        goto_row.addWidget(self.goto_dur)
         goto_row.addWidget(goto_btn)
 
         pos_row = QHBoxLayout()
@@ -578,14 +585,22 @@ class DroneWindow(QWidget):
             y = float(self.goto_y.text())
             z = float(self.goto_z.text())
             yaw_deg = float(self.goto_theta.text() or 0.0)
+            # 0.0 is the wire value for "unset": the controller then falls back
+            # to its goto_duration parameter.
+            duration = float(self.goto_dur.text() or 0.0)
         except ValueError:
             # Don't let a typo raise inside a click handler - it would surface
             # as a traceback in the terminal and nothing at all in the GUI.
-            self.log.append("Go To ignored: x/y/z/θ must be numbers")
+            self.log.append("Go To ignored: x/y/z/θ/t must be numbers")
+            return
+        if duration < 0.0:
+            self.log.append("Go To ignored: t must be positive (blank = controller default)")
             return
         # The box is degrees (readable); GoTo.yaw is radians.
-        self.node.send_goto(x, y, z, math.radians(yaw_deg))
-        self.log.append(f"GOTO sent: x={x} y={y} z={z} yaw={yaw_deg}deg")
+        self.node.send_goto(x, y, z, math.radians(yaw_deg), duration)
+        dur_txt = f"{duration}s" if duration > 0.0 else "controller default"
+        self.log.append(
+            f"GOTO sent: x={x} y={y} z={z} yaw={yaw_deg}deg t={dur_txt}")
 
     def make_logs(self):
         box = QGroupBox("GUI Logs")
@@ -763,7 +778,7 @@ class DroneWindow(QWidget):
         drop_recent = dropped[1] if dropped else 0
         occl_recent = occluded[1] if occluded else 0
         if not pose_ok and not raw_fresh:
-            self._set_vicon_banner("VICON LOST\nNO DATA AT ALL", CRITICAL)
+            self._set_vicon_banner("VICON LOST\nNO DATA RECEIVED", CRITICAL)
         elif not pose_ok:
             # Raw frames are arriving but none survive - the drone is getting
             # nothing, which looks identical to a dead feed from onboard.
@@ -884,8 +899,8 @@ class _FakeNode:
     def send_estop(self):
         print("[fake] estop")
 
-    def send_goto(self, x, y, z, yaw=0.0, duration=2.0):
-        print(f"[fake] goto x={x} y={y} z={z} yaw={yaw}")
+    def send_goto(self, x, y, z, yaw=0.0, duration=0.0):
+        print(f"[fake] goto x={x} y={y} z={z} yaw={yaw} duration={duration}")
 
     def position_error_m(self):
         import math

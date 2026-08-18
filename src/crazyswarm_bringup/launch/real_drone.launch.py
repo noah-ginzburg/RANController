@@ -2,11 +2,42 @@ import os
 import yaml
 from datetime import datetime
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, TimerAction, SetLaunchConfiguration
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction, TimerAction, SetLaunchConfiguration, PushLaunchConfigurations, PopLaunchConfigurations
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
+
+
+# The teleop window, and how it dies on Ctrl+C.
+#
+# `gnome-terminal` is a thin client: the window is created by
+# gnome-terminal-server, which is nobody's child of ours. Signalling the client
+# therefore closes nothing -- the window, its shell and teleop_twist_keyboard
+# all sail through launch's SIGINT and keep publishing /cmd_vel at a drone that
+# is trying to land. So the process launch owns is this wrapper, and the window
+# is taken down from the inside: the wrapper holds a sentinel file for as long
+# as it lives, and a watchdog in the window kills the terminal's process group
+# within half a second of that file going away.
+#
+# The `& wait` at the end matters. A non-interactive bash defers its traps until
+# the current foreground command returns, and `gnome-terminal --wait` doesn't
+# return until the window closes -- which is exactly what the trap is supposed
+# to cause. Backgrounding it and waiting lets the signal land immediately.
+TELEOP_WRAPPER = r"""
+sentinel=$(mktemp /tmp/cf_teleop.XXXXXX)
+trap 'rm -f "$sentinel"' EXIT
+trap 'rm -f "$sentinel"; exit 0' INT TERM
+gnome-terminal --wait --title='cmd_vel teleop' -- bash -c '
+    source /opt/ros/humble/setup.bash
+    if [ -f "$1" ]; then source "$1"; fi
+    ( while [ -e "$0" ]; do sleep 0.5; done; kill -TERM 0 ) &
+    exec ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+        --ros-args -p speed:="$2" -p turn:="$3"
+' "$sentinel" "$1" "$2" "$3" &
+wait $!
+"""
 
 
 def _load_launch_args(section):
@@ -72,7 +103,10 @@ def launch_controllers(context, *args, **kwargs):
     ran_drones = [name.strip() for name in ran_str.split(',') if name.strip()]
     target_names = [name.strip() for name in target_names_str.split(',') if name.strip()]
     target_qualities = [float(q.strip()) for q in target_qualities_str.split(',') if q.strip()]
-    hover_speed = LaunchConfiguration('hover_speed_real').perform(context) if real else LaunchConfiguration('hover_speed_sim').perform(context)
+    # There is no hover speed to configure on this stack: set_speeds only
+    # applies one in sim, so the node gets 0.0 and the thrust comes from the
+    # onboard commander. The sim knob lives in sim_drone.launch.py.
+    hover_speed = 0.0
     launch_height = float(LaunchConfiguration('launch_height').perform(context))
     delta_z_by_name = _load_delta_z(drone_names)
 
@@ -81,10 +115,13 @@ def launch_controllers(context, *args, **kwargs):
     # them; launch applies the list in order and the last write wins.
     controller_params = LaunchConfiguration('controller_params').perform(context)
     ran_params = LaunchConfiguration('ran_params').perform(context)
-    # real_drone_teleop.launch.py sets this. It makes controller_server take
-    # off by itself, since teleop has no takeoff button, and it silences the RAN
-    # server's heading publish so the model can't fight the keyboard.
-    teleop_enabled = LaunchConfiguration('teleop_enabled').perform(context) == 'true'
+    # teleop:='true' silences the RAN server's heading publish so the model
+    # can't fight the keyboard. The keyboard window itself is started in
+    # generate_launch_description().
+    teleop_enabled = LaunchConfiguration('teleop').perform(context) == 'true'
+    # Its own argument, not a synonym for the one above -- teleop only moves its
+    # default. See the declaration in generate_launch_description().
+    auto_launch = LaunchConfiguration('auto_launch').perform(context) == 'true'
 
     # Static (non-flying) targets: nothing simulated, just a `mocap -> <name>`
     # TF frame each, which is what spherical_RAN_server looks up -- so the
@@ -124,13 +161,7 @@ def launch_controllers(context, *args, **kwargs):
             executable='vicon_bridge.py',
             output='screen',
             # send_orientation=True requires firmware with the fixed external-
-            # attitude update (2026.04+); on old firmware it destabilizes the EKF
-            # at yaw far from 0. Set False to fall back to position-only fusion.
-            # 2026-07-17: True — new airframe confirmed flashed with 2026.04.
-            # Position-only fusion was the root cause of the day's runaways:
-            # EKF yaw is gyro-only, drifts with every spin, and persists between
-            # takeoff attempts -> control frame rotates -> lateral runaway/tumble
-            # (bags 151857, 152128). Full pose fusion corrects yaw continuously.
+            # attitude update (2026.04+); on old firmware, I THINK (but am unsure) that it destabilizes the EKF
             parameters=[{'all_drones': drone_names}, {'send_orientation': True}],
         ))
     if static_names:
@@ -152,9 +183,9 @@ def launch_controllers(context, *args, **kwargs):
             name=f'controller_server_{name}',
             output='screen',
             parameters=[controller_params,
-                        {'drone_name': name}, {'hover_speed': float(hover_speed)}, {'real': real},
+                        {'drone_name': name}, {'hover_speed': hover_speed}, {'real': real},
                         {'launch_height': launch_height}, {'delta_z': delta_z_by_name[name]},
-                        {'teleop_enabled': teleop_enabled}],
+                        {'auto_launch': auto_launch}],
         ))
         if name in ran_drones:
             # An empty list has no inferrable parameter type, and launch rejects
@@ -193,8 +224,6 @@ def generate_launch_description():
     args = _load_launch_args('real')
 
     real_arg = DeclareLaunchArgument('real', default_value=args['real'])
-    hover_speed_sim_arg = DeclareLaunchArgument('hover_speed_sim', default_value=args['hover_speed_sim'])
-    hover_speed_real_arg = DeclareLaunchArgument('hover_speed_real', default_value=args['hover_speed_real'])
     launch_height_arg = DeclareLaunchArgument('launch_height', default_value=args['launch_height'])
     drone_names_arg = DeclareLaunchArgument('drone_names', default_value=args['drone_names'])
     ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value=args['ran_drones'])
@@ -226,9 +255,58 @@ def generate_launch_description():
         'ran_params',
         default_value=os.path.join(pkg_bringup, 'config', 'ran_params.yaml'))
 
-    # Normally false. real_drone_teleop.launch.py sets it true -- see that file.
-    teleop_enabled_arg = DeclareLaunchArgument(
-        'teleop_enabled', default_value=args['teleop_enabled'])
+    # Manual keyboard flight on top of the normal hardware stack. Two things
+    # change in the nodes when this is true (see launch_controllers):
+    #
+    #   1. `auto_launch` defaults to false, so controller_server does not take
+    #      off on its own. The takeoff is yours to command from the debug GUI,
+    #      and that service call is also what sets launch_requested, the
+    #      interlock authorising the 50 Hz setpoint stream -- until it happens
+    #      the keyboard does nothing at all, since /cmd_vel can only steer a
+    #      drone that's already in the air. Only the DEFAULT moves, so
+    #      `teleop:=true auto_launch:=true` is still a legal (if lively) combo.
+    #   2. The RAN server stops publishing <drone>/desired_heading. The model
+    #      still runs and still draws in RViz, but if it published, the
+    #      controller would scale that heading by max_speed and command it,
+    #      which means competing with the keyboard.
+    #
+    # Wait for the climb to finish before you touch the keyboard. The first
+    # /cmd_vel message clears `taking_off` and starts the setpoint stream, which
+    # then competes with the onboard high-level commander that's still flying
+    # the takeoff.
+    teleop_arg = DeclareLaunchArgument('teleop', default_value=args['teleop'])
+
+    # Whether the controller takes off by itself at startup or waits for a
+    # takeoff from the debug GUI. Separate from `teleop`: that argument only
+    # supplies a different default here, and the yaml value applies whenever
+    # teleop is off.
+    auto_launch_arg = DeclareLaunchArgument(
+        'auto_launch',
+        default_value=PythonExpression([
+            "'false' if '", LaunchConfiguration('teleop'), "' == 'true' else '",
+            args['auto_launch'], "'"]))
+    teleop_speed_arg = DeclareLaunchArgument(
+        'teleop_speed', default_value=args['teleop_speed'])
+    teleop_turn_arg = DeclareLaunchArgument(
+        'teleop_turn', default_value=args['teleop_turn'])
+    ws_setup_arg = DeclareLaunchArgument(
+        'ws_setup', default_value=os.path.expanduser(args['ws_setup']))
+
+    # teleop_twist_keyboard reads from stdin, and a node launched by ros2 launch
+    # doesn't get a terminal, so keypresses would go nowhere. That's why it runs
+    # in its own gnome-terminal window. If that window doesn't appear, just run
+    # it by hand in any sourced terminal; nothing else here depends on it:
+    #
+    #   ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+    #       --ros-args -p speed:=0.2 -p turn:=0.5
+    teleop_keyboard = ExecuteProcess(
+        condition=IfCondition(LaunchConfiguration('teleop')),
+        cmd=['bash', '-c', TELEOP_WRAPPER, 'cf_teleop',
+             LaunchConfiguration('ws_setup'),
+             LaunchConfiguration('teleop_speed'),
+             LaunchConfiguration('teleop_turn')],
+        output='screen',
+    )
 
     # 3_targets.rviz shows the cf01/02/03 RobotModels, which don't exist when
     # the targets are static -- so default to the config that draws the target
@@ -253,9 +331,10 @@ def generate_launch_description():
             'mocap': 'False',
             'rviz': LaunchConfiguration('rviz'),
             'gui': 'False',
-            # Don't start crazyswarm2's gamepad teleop (joy_node + teleop node). We
-            # drive via teleop_twist_keyboard -> /cmd_vel -> our controller instead,
-            # and an extra commander on the drone is a safety/conflict hazard.
+            # Don't start crazyswarm2's gamepad teleop (joy_node + teleop node).
+            # Unrelated to our own `teleop` argument: we drive via
+            # teleop_twist_keyboard -> /cmd_vel -> our controller instead, and an
+            # extra commander on the drone is a safety/conflict hazard.
             'teleop': 'False',
             'rviz_config_file': LaunchConfiguration('rviz_config_file'),
         }.items()
@@ -270,8 +349,6 @@ def generate_launch_description():
         SetLaunchConfiguration('sigterm_timeout', args['sigterm_timeout']),
         SetLaunchConfiguration('sigkill_timeout', args['sigkill_timeout']),
         real_arg,
-        hover_speed_sim_arg,
-        hover_speed_real_arg,
         launch_height_arg,
         drone_names_arg,
         ran_drones_arg,
@@ -284,8 +361,21 @@ def generate_launch_description():
         static_target_qualities_arg,
         controller_params_arg,
         ran_params_arg,
-        teleop_enabled_arg,
+        teleop_arg,
+        auto_launch_arg,
+        teleop_speed_arg,
+        teleop_turn_arg,
+        ws_setup_arg,
         rviz_config_arg,
+        # crazyswarm2's launch_arguments are NOT scoped to the include: each
+        # one stays set in this file's configuration afterwards. `teleop`
+        # collides (theirs is the gamepad stack, ours is the keyboard), so
+        # without this push/pop the 'teleop': 'False' above would overwrite the
+        # `teleop` argument for everything visited later -- the keyboard window
+        # and launch_controllers included.
+        PushLaunchConfigurations(),
         crazyswarm2,
+        PopLaunchConfigurations(),
+        teleop_keyboard,
         TimerAction(period=3.0, actions=[crazyflie_controllers]),
     ])
