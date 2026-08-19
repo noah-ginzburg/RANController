@@ -19,53 +19,53 @@ frame: mocap
 
 # Real:
 static_targets:
+  # target01:
+  #   enabled: true
+  #   position: [0.833621, 0.356611, 0.6]   
+  #   quality: 20.0
+  #   draggable: true
+  #   color: [1.0, 0.35, 0.1, 0.9]   # r, g, b, a
+  #   scale: 0.12                     # sphere diameter [m]
+
+  # # target02:
+  # #   enabled: true
+  # #   position: [1.183710, -0.298131, 0.903647]  # was cf02 (delta_z 0.403647)
+  # #   quality: 20.0
+  # #   draggable: true
+  # #   color: [0.1, 0.8, 0.35, 0.9]
+  # #   scale: 0.12
+
+  # # target03:
+  # #   enabled: true
+  # #   position: [0.683532, 1.011354, 0.903647]   # was cf03 (delta_z 0.403647)
+  # #   quality: 20.0
+  # #   draggable: true
+  # #   color: [0.2, 0.45, 1.0, 0.9]
+  # #   scale: 0.12
+
+
+# Sim
+static_targets:
   target01:
     enabled: true
-    position: [0.833621, 0.356611, 0.6]   
+    position: [0.933621, 0.356611, 2.117606]   # was cf01 (delta_z 1.617606)
     quality: 20.0
     draggable: true
     color: [1.0, 0.35, 0.1, 0.9]   # r, g, b, a
     scale: 0.12                     # sphere diameter [m]
 
-  # target02:
-  #   enabled: true
-  #   position: [1.183710, -0.298131, 0.903647]  # was cf02 (delta_z 0.403647)
-  #   quality: 20.0
-  #   draggable: true
-  #   color: [0.1, 0.8, 0.35, 0.9]
-  #   scale: 0.12
+  target02:
+    enabled: true
+    position: [1.183710, -0.298131, 0.903647]  # was cf02 (delta_z 0.403647)
+    quality: 20.0
+    draggable: true
+    color: [0.1, 0.8, 0.35, 0.9]
+    scale: 0.12
 
-  # target03:
-  #   enabled: true
-  #   position: [0.683532, 1.011354, 0.903647]   # was cf03 (delta_z 0.403647)
-  #   quality: 20.0
-  #   draggable: true
-  #   color: [0.2, 0.45, 1.0, 0.9]
-  #   scale: 0.12
-
-
-#Sim:
-# static_targets:
-#   target01:
-#     enabled: true
-#     position: [0.933621, 0.356611, 2.117606]   # was cf01 (delta_z 1.617606)
-#     quality: 20.0
-#     draggable: true
-#     color: [1.0, 0.35, 0.1, 0.9]   # r, g, b, a
-#     scale: 0.12                     # sphere diameter [m]
-
-#   target02:
-#     enabled: true
-#     position: [1.183710, -0.298131, 0.903647]  # was cf02 (delta_z 0.403647)
-#     quality: 20.0
-#     draggable: true
-#     color: [0.1, 0.8, 0.35, 0.9]
-#     scale: 0.12
-
-#   target03:
-#     enabled: true
-#     position: [0.683532, 1.011354, 0.903647]   # was cf03 (delta_z 0.403647)
-#     quality: 20.0
-#     draggable: true
-#     color: [0.2, 0.45, 1.0, 0.9]
-#     scale: 0.12
+  target03:
+    enabled: true
+    position: [0.683532, 1.011354, 0.903647]   # was cf03 (delta_z 0.403647)
+    quality: 20.0
+    draggable: true
+    color: [0.2, 0.45, 1.0, 0.9]
+    scale: 0.12

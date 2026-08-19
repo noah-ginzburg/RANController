@@ -106,7 +106,7 @@ common:
 
   # Take off as soon as the controller starts, instead of waiting for a takeoff
   # command from the debug GUI. Independent of `teleop`
-  auto_launch: 'false'
+  auto_launch: 'true'
 
 #Real flight launch params
 real:
@@ -161,7 +161,7 @@ sim:
   # I believe it is dependent on the simulation clock speed. This is the last value that got it relatively stable (not drifting
   # up or down). This can affect whether the drone flies straight or not to the targets, and if it flies with a positive/
   # negative pitch, it can introduce a bias becaues the angular difference between targets is no longer equal.
-  hover_speed_sim: '0.168'
+  hover_speed_sim: '0.170'
 
   # The sim workflow is built around the static targets, so they're on here.
   use_static_targets: 'true'
