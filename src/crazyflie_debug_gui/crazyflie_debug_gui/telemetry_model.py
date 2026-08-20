@@ -15,11 +15,13 @@ from collections import deque
 import rclpy
 import tf2_ros
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
+from rclpy.qos import (QoSProfile, HistoryPolicy, ReliabilityPolicy,
+                       DurabilityPolicy)
 
 from crazyflie_interfaces.msg import Status, LogDataGeneric
 from crazyflie_debug_interfaces.msg import DebugFlags
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Bool
 from motion_capture_tracking_interfaces.msg import NamedPoseArray
 
 # The RAW Vicon stream, upstream of vicon_bridge. Optional on purpose: in sim
@@ -250,9 +252,35 @@ class TelemetryModel(Node):
         self.command_pub = self.create_publisher(
             DebugFlags, f'/{self.drone_name}/debug_command', 10)
 
+        # --- RAN publisher toggle --------------------------------------
+        # Goes straight to the RAN server rather than through the controller,
+        # because it is the RAN server's own publish that gets gated and the
+        # controller has no say in it. Still a topic and not a parameter
+        # service, for the same reason as everything else here: a service call
+        # can block, and a blocked GUI is a dead emergency stop.
+        self.ran_enable_pub = self.create_publisher(
+            Bool, f'/{self.drone_name}/ran_enabled', 10)
+        # What the RAN server says its state actually IS, which is not
+        # necessarily what we last asked for -- the launch file sets the
+        # starting value and the server may not have been running when we
+        # clicked. TRANSIENT_LOCAL to match the publisher, so we get the
+        # current state on connect however the two nodes are ordered at
+        # startup. None until it answers, which the button renders as unknown
+        # rather than guessing.
+        self.ran_enabled = None
+        self.create_subscription(
+            Bool, f'/{self.drone_name}/ran_enabled_status', self.on_ran_status,
+            QoSProfile(depth=1,
+                       history=HistoryPolicy.KEEP_LAST,
+                       reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
     # ------------------------------------------------------------------
     # Subscription callbacks. Each one only caches - no widgets, no math.
     # ------------------------------------------------------------------
+
+    def on_ran_status(self, msg):
+        self.ran_enabled = bool(msg.data)
 
     def on_status(self, msg):
         self.status = msg
@@ -719,6 +747,17 @@ class TelemetryModel(Node):
 
     def send_estop(self):
         self._send(DebugFlags.CMD_ESTOP)
+
+    def send_ran_enabled(self, enabled):
+        """Ask the RAN server to start or stop publishing desired_heading.
+
+        Not a DebugFlags command: those are addressed to the controller server,
+        and this is the RAN server's own publish being gated. ran_enabled is
+        left alone here -- it only ever tracks what the server reports back on
+        the status topic, so the button can't end up showing a state the model
+        never entered.
+        """
+        self.ran_enable_pub.publish(Bool(data=bool(enabled)))
 
     # ------------------------------------------------------------------
 

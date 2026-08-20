@@ -99,10 +99,12 @@ def launch_controllers(context, *args, **kwargs):
     target_qualities = target_qualities + static_qualities
     ran_targets = drone_names + static_names
 
-    # There is no teleop in sim -- no `teleop` argument is declared and no
-    # keyboard window is started -- so the RAN server is pinned rather than left
-    # on its own declare_parameter default, and it keeps publishing its heading.
-    teleop_enabled = False
+    # Whether the RAN server publishes <drone>/desired_heading at startup.
+    # Sim gets the same argument as the real stack: this used to be pinned to
+    # "always publishing" because it was derived from a teleop flag sim doesn't
+    # have, which left no way to fly a GoTo here without the model taking the
+    # drone off you. The debug GUI's "RAN Publisher" button flips it live.
+    ran_enabled = LaunchConfiguration('ran_enabled').perform(context) == 'true'
     auto_launch = LaunchConfiguration('auto_launch').perform(context) == 'true'
 
     actions = []
@@ -137,7 +139,7 @@ def launch_controllers(context, *args, **kwargs):
                 output='screen',
                 parameters=[ran_params,
                             {'drone_name': name}, {'all_drones': ran_targets}, {'target_names': target_names}, {'target_qualities': target_qualities},
-                            {'teleop_enabled': teleop_enabled}],
+                            {'ran_enabled': ran_enabled}],
             ))
         # One GUI per drone, outside the ran_drones check so it always runs.
         actions.append(Node(
@@ -163,6 +165,10 @@ def generate_launch_description():
     # sim moves its default, so auto_launch:='false' is the only way to get a
     # sim drone that waits for the debug GUI.
     auto_launch_arg = DeclareLaunchArgument('auto_launch', default_value=args['auto_launch'])
+    # Starting state of the RAN heading publisher; the GUI can flip it at
+    # runtime. Same argument and same meaning as on the real stack.
+    ran_enabled_arg = DeclareLaunchArgument(
+        'ran_enabled', default_value=args['ran_enabled'])
     launch_height_arg = DeclareLaunchArgument('launch_height', default_value=args['launch_height'])
     drone_names_arg = DeclareLaunchArgument('drone_names', default_value=args['drone_names'])
     ran_drones_arg = DeclareLaunchArgument('ran_drones', default_value=args['ran_drones'])
@@ -237,6 +243,7 @@ def generate_launch_description():
         launch_height_arg,
         drone_names_arg,
         ran_drones_arg,
+        ran_enabled_arg,
         target_names_arg,
         target_qualities_arg,
         static_targets_yaml_arg,

@@ -1,6 +1,6 @@
 import sys
 import time
-from crazyflie_interfaces.srv import Takeoff, Land, GoTo, Arm
+from crazyflie_interfaces.srv import Takeoff, Land, GoTo, Arm, NotifySetpointsStop
 from crazyflie_interfaces.msg import FullState, VelocityWorld
 from crazyflie_debug_interfaces.msg import DebugFlags
 from std_srvs.srv import Empty
@@ -11,6 +11,9 @@ from rclpy.duration import Duration as RCLDuration
 from builtin_interfaces.msg import Duration
 import tf2_ros
 from geometry_msgs.msg import Twist, Vector3
+from std_msgs.msg import Bool
+from rclpy.qos import (QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy,
+                       QoSDurabilityPolicy)
 from rclpy.signals import SignalHandlerOptions
 
 
@@ -66,6 +69,35 @@ class DroneController(Node):
         # the wrong name never matches and call_async silently does nothing.
         self.goto_cli = self.create_client(GoTo, f'{self.drone_name}/go_to')
         self.emergency_cli = self.create_client(Empty, f'{self.drone_name}/emergency')
+        # THE fix for "goto/land do nothing and the drone drops out of the air".
+        #
+        # Every cmd_velocity_world we stream reaches the firmware as
+        # commanderSetSetpoint(..., COMMANDER_PRIORITY_CRTP). CRTP is 2,
+        # COMMANDER_PRIORITY_HIGHLEVEL is 1 (commander.h), so commander.c does
+        # two things we have to undo before any high-level command can fly:
+        #
+        #   1. it latches the priority queue at CRTP, and NOTHING lowers it
+        #      again on its own. The high-level commander pushes its setpoints
+        #      at PRIORITY_HIGHLEVEL, so `if (priority >= currentPriority)`
+        #      rejects every one of them -- the GoTo/Land trajectory is planned
+        #      and then silently thrown away, tick after tick.
+        #   2. `if (priority > COMMANDER_PRIORITY_HIGHLEVEL)
+        #      crtpCommanderHighLevelStop()` -- so we also stop the planner on
+        #      every single one of our 50 Hz ticks.
+        #
+        # With the HL setpoints rejected, the setpoint queue keeps our LAST
+        # velocity setpoint with its timestamp frozen, and supervisor.c times
+        # it out: >500 ms raises COMMANDER_WDT_WARNING (levels off), >2000 ms
+        # raises COMMANDER_WDT_TIMEOUT and cuts the motors. That is exactly the
+        # "flops out of mid air about a second into the goto" we were seeing,
+        # and the same thing killed Land.
+        #
+        # notify_setpoints_stop -> cflib send_notify_setpoint_stop() ->
+        # firmware commanderRelaxPriority(), which drops the priority back to
+        # LOWEST *and* calls crtpCommanderHighLevelTellState() so the planner
+        # starts from where the drone actually is rather than from stale state.
+        self.notify_stop_cli = self.create_client(
+            NotifySetpointsStop, f'{self.drone_name}/notify_setpoints_stop')
 
 
         while not self.cli.wait_for_service(timeout_sec=2.0):
@@ -77,6 +109,24 @@ class DroneController(Node):
         # services itself so a slow/hung service can't freeze its window.
         self.debug_cmd_sub = self.create_subscription(
             DebugFlags, f'/{self.drone_name}/debug_command', self.debug_command_callback, 10)
+        # Whether the RAN server is currently commanding us.
+        #
+        # Silencing the RAN publisher is NOT enough to stop the drone on its
+        # own, which is the whole reason this subscription exists. vel_desired
+        # holds the last heading we were given and nothing decays it, so a
+        # drone whose model has been switched off just keeps flying the
+        # direction it was last pointed -- the publisher goes quiet and the
+        # drone sails on regardless. We have to be told, so we can let go.
+        #
+        # TRANSIENT_LOCAL to match spherical_RAN_server's publisher, so we pick
+        # up the current state on connect no matter which node launch starts
+        # first.
+        self.ran_status_sub = self.create_subscription(
+            Bool, f'{self.drone_name}/ran_enabled_status', self.ran_status_callback,
+            QoSProfile(depth=1,
+                       history=QoSHistoryPolicy.KEEP_LAST,
+                       reliability=QoSReliabilityPolicy.RELIABLE,
+                       durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
 
         self.create_timer(1.0 / self.UPDATE_RATE, self.update)
         self.prev_time = self.get_clock().now()
@@ -104,6 +154,23 @@ class DroneController(Node):
         # Commanded yaw (rad). None = leave orientation as TF reports it.
         self.yaw_desired = None
         self.yaw_target = None
+        # Where to hold station after a GoTo has finished.
+        #
+        # A GoTo is not over when the drone gets there -- something has to keep
+        # it there. In SIM this is the position we keep commanding; on REAL it
+        # means "stay off the radio, the onboard planner is holding this for
+        # us". Cleared by whatever takes the drone next (a RAN heading, teleop,
+        # land, another GoTo), which is what lets the model resume by itself.
+        self.goto_hold = None
+        # SIM GoTo watchdog. The real path already had one via
+        # goto_wait_deadline; the sim ramp had none because it used to declare
+        # itself finished the moment the setpoint arrived, which always
+        # happened. Now that completion waits on the drone, it needs a way out.
+        self.goto_deadline = None
+        # SIM only: the velocity that walks pos_desired toward goto_target,
+        # recomputed by _step_goto each tick. update() commands this INSTEAD of
+        # the RAN heading while a GoTo is running -- see _goto_owns_drone().
+        self.goto_vel = np.zeros(3)
         # REAL only: while set, the high-level GoTo owns the drone and update()
         # publishes nothing, so our streaming setpoints can't fight it.
         self.goto_wait = None
@@ -137,6 +204,12 @@ class DroneController(Node):
         self.prev_trans = None
 
         self.last_teleop_msg_time = self.get_clock().now()
+
+        # Whether we believe the RAN is allowed to command us. Assumed True so
+        # a controller running without any RAN server behaves exactly as it did
+        # before this existed; ran_status_callback corrects it the moment a
+        # server actually reports in.
+        self.ran_enabled = True
 
     @staticmethod
     def _to_duration(seconds):
@@ -252,12 +325,72 @@ class DroneController(Node):
         rclpy.spin_until_future_complete(self, self.future)
         return self.future.result()
 
+    def send_notify_setpoints_stop_req(self):
+        """Blocking notify_setpoints_stop, for the shutdown path only.
+
+        _release_to_high_level() chains off add_done_callback, which needs a
+        spinning executor. On the Ctrl+C path rclpy.spin() has already returned,
+        so nothing would ever pump that future -- hence this variant, which
+        spins explicitly the way the other send_*_req helpers do.
+        """
+        if not self.notify_stop_cli.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn(
+                'notify_setpoints_stop unavailable at shutdown; the landing may '
+                'be rejected by the firmware priority latch.')
+            return None
+        req = NotifySetpointsStop.Request()
+        req.group_mask = self.GROUP_MASK
+        req.remain_valid_millisecs = 0
+        future = self.notify_stop_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+        return future.result()
+
     def send_emergency_req(self):
         # Cuts the motors immediate ly. Bounded spin so a wedged executor can't
         # block the panic stop, but we still pump the link once to transmit it.
         future = self.emergency_cli.call_async(Empty.Request())
         rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
         return future.result()
+
+    def _release_to_high_level(self, then, what):
+        """Relax the firmware's setpoint priority, then run `then`.
+
+        Call this after the setpoint stream has already been silenced, never
+        before: the next 50 Hz tick would re-latch COMMANDER_PRIORITY_CRTP and
+        re-stop the planner, putting us straight back where we started. See the
+        long note on notify_stop_cli in __init__ for what actually goes wrong.
+
+        `then` is chained off the future rather than called next to it because
+        notify_setpoints_stop and go_to/land are two different services, and
+        nothing guarantees two independent call_async requests arrive in the
+        order they were issued. Relaxing the priority AFTER the trajectory has
+        been planned still works, but relaxing it after the drone has already
+        been dropped does not, so we make the ordering explicit.
+
+        Sim has no priority to relax (its _notify_setpoints_stop_callback is a
+        logging stub), so there we just run `then` directly.
+        """
+        if not self.real or not self.notify_stop_cli.service_is_ready():
+            if self.real:
+                self.get_logger().warn(
+                    f'{self.drone_name}/notify_setpoints_stop unavailable; sending '
+                    f'{what} anyway. If the drone levels off and then drops, this '
+                    'is why -- the firmware is still latched at CRTP priority.')
+            then()
+            return
+
+        req = NotifySetpointsStop.Request()
+        req.group_mask = self.GROUP_MASK
+        # How long the firmware keeps honouring streamed setpoints before the
+        # relax takes effect. We have already stopped streaming, so we want the
+        # handover immediately.
+        req.remain_valid_millisecs = 0
+        future = self.notify_stop_cli.call_async(req)
+        # add_done_callback fires on the executor thread we are already on, so
+        # this stays inside the no-spinning-in-a-callback rule.
+        future.add_done_callback(lambda _f: then())
+        self.get_logger().info(
+            f'Released {self.drone_name} to the high-level commander for {what}.')
 
     def send_goto_req(self, group_mask, relative, goal, yaw, duration):
 
@@ -300,6 +433,13 @@ class DroneController(Node):
                 self.pos_desired = self.goto_wait.copy()
                 self.goto_wait = None
                 self.goto_wait_deadline = None
+                # Do NOT resume the setpoint stream here. goto_hold keeps
+                # update() quiet so the onboard planner goes on holding this
+                # position properly; the next desired_heading (or a keypress,
+                # or a Land) clears it and we take back over. That is the
+                # "GoTo wins, then RAN resumes" handover, minus the drift.
+                self.vel_desired = np.zeros(3)
+                self.goto_hold = self.pos_desired.copy()
                 return False
 
         if now > self.goto_wait_deadline:
@@ -309,9 +449,22 @@ class DroneController(Node):
             self.pos_desired = None
             self.goto_wait = None
             self.goto_wait_deadline = None
+            self.vel_desired = np.zeros(3)
+            self.should_hover = True
+            self.goto_hold = None
             return False
 
         return True
+
+    def _goto_owns_drone(self):
+        """True while a GoTo is in progress and must not be interfered with.
+
+        Covers both paths: goto_wait is the real one (high-level commander is
+        flying it), goto_target is the sim one (we are ramping the setpoint
+        ourselves). While either is set the RAN heading is ignored, which is
+        what stops the model hijacking a GoTo partway through.
+        """
+        return self.goto_wait is not None or self.goto_target is not None
 
     @staticmethod
     def _yaw_from_quat(q):
@@ -368,25 +521,75 @@ class DroneController(Node):
                 f'drone {self.drone_name} hovering at {self.pos_desired}.')
 
     def _step_goto(self, dt):
-        """Walk pos_desired toward goto_target at the active GoTo speed."""
-        if self.goto_target is None or dt <= 0.0:
+        """Walk pos_desired toward goto_target, and set the velocity to match.
+
+        goto_vel is the other half of the sim GoTo and it is not optional. The
+        sim consumes cmd_full_state, whose position field _update_pos() fills
+        in from the MEASURED transform every tick -- so the commanded position
+        always equals the current position, the sim's position PID sees zero
+        error, and the drone is in practice velocity-controlled. That is why
+        the ramp used to do nothing at all: pos_desired was computed here and
+        then never read by anything that reaches the wire.
+
+        update() now overrides the position field with pos_desired while a
+        GoTo is running and commands goto_vel alongside it, so the setpoint
+        leads the drone and the velocity carries it there.
+        """
+        if self.goto_target is None:
+            self.goto_vel = np.zeros(3)
             return
         if self.pos_desired is None:
             self.pos_desired = self.pos.copy()
-        # prev_time is only updated at the END of update(), and several paths
-        # return early, so dt can arrive very large. Uncapped, that turns one
-        # tick into a jump straight to the target - the lunge we are avoiding.
-        dt = min(dt, 1.0 / self.UPDATE_RATE * 2.0)
 
-        delta = self.goto_target - self.pos_desired
-        dist = float(np.linalg.norm(delta))
-        step = self.goto_speed * dt
-        if dist <= max(step, self.GOTO_ARRIVED_M):
-            self.pos_desired = self.goto_target.copy()
-            self.goto_target = None
-            self.get_logger().info(f'GoTo: setpoint arrived at {self.pos_desired}')
+        # ---- the ramp: walk the setpoint toward the target --------------
+        if dt > 0.0:
+            # prev_time is only updated at the END of update(), and several
+            # paths return early, so dt can arrive very large. Uncapped, that
+            # turns one tick into a jump straight to the target - the lunge we
+            # are avoiding.
+            dt = min(dt, 1.0 / self.UPDATE_RATE * 2.0)
+
+            delta = self.goto_target - self.pos_desired
+            dist = float(np.linalg.norm(delta))
+            step = self.goto_speed * dt
+            if dist <= max(step, self.GOTO_ARRIVED_M):
+                # Pin the setpoint ON the target and LEAVE it there. This used
+                # to clear goto_target, which ended the GoTo the instant the
+                # SETPOINT arrived -- while the drone was still chasing it and
+                # typically ~0.2 m short. That early release is why the move
+                # was never precise: we stopped commanding the target before
+                # the drone had closed the gap.
+                self.pos_desired = self.goto_target.copy()
+                self.goto_vel = np.zeros(3)
+            else:
+                direction = delta / dist
+                self.pos_desired = self.pos_desired + direction * step
+                self.goto_vel = direction * self.goto_speed
+
+        # ---- completion: judged on the DRONE, not on the setpoint -------
+        reached = (self.tf_ready and not np.isnan(self.pos).any()
+                   and float(np.linalg.norm(self.pos - self.goto_target))
+                   <= self.GOTO_REACHED_M)
+        timed_out = (self.goto_deadline is not None
+                     and self.get_clock().now() > self.goto_deadline)
+        if not (reached or timed_out):
+            return
+
+        if reached:
+            self.get_logger().info(
+                f'GoTo: drone arrived at {self.goto_target} '
+                f'(within {self.GOTO_REACHED_M:.3f} m); holding.')
+            self.goto_hold = self.goto_target.copy()
         else:
-            self.pos_desired = self.pos_desired + (delta / dist) * step
+            # Could not get there. Hold where the drone actually is rather than
+            # keep leaning on a target it has already failed to reach.
+            self.get_logger().error(
+                f'GoTo: TIMED OUT short of {self.goto_target}; holding at '
+                f'{self.pos}.')
+            self.goto_hold = self.pos.copy()
+        self.goto_target = None
+        self.goto_deadline = None
+        self.goto_vel = np.zeros(3)
 
     def debug_command_callback(self, msg: DebugFlags):
         """Handle one command from the debug GUI.
@@ -410,6 +613,8 @@ class DroneController(Node):
             self.launch_requested = False
             self.goto_target = None
             self.goto_wait = None
+            self.goto_hold = None
+            self.goto_deadline = None
             self.emergency_cli.call_async(Empty.Request())
         elif msg.command == DebugFlags.CMD_GOTO:
             self._debug_goto(msg)
@@ -441,6 +646,8 @@ class DroneController(Node):
         self.launch_requested = True
         self.should_land = False
         self.pos_desired = None
+        self.goto_hold = None
+        self.goto_deadline = None
 
         req = Takeoff.Request()
         req.group_mask = self.GROUP_MASK
@@ -457,6 +664,8 @@ class DroneController(Node):
         self.launch_requested = False
         self.goto_target = None      # abandon any in-progress GoTo
         self.goto_wait = None
+        self.goto_hold = None
+        self.goto_deadline = None
 
         # Land.height is an ABSOLUTE target altitude, not a descent distance:
         # crazyswarm2 hands it straight to cflib's
@@ -466,15 +675,28 @@ class DroneController(Node):
         # ground -- it drove the setpoint underground and the controller kept
         # pushing down into the floor. Ground is 0.0, full stop; this also drops
         # the old NaN/stale-TF hazard, since the value no longer depends on pos.
+        # Stop the RAN velocity from being reapplied the moment anything
+        # clears should_land: a landing drone must not inherit a stale heading.
+        self.vel_desired = np.zeros(3)
+        self.goto_vel = np.zeros(3)
+
         req = Land.Request()
         req.group_mask = self.GROUP_MASK
         req.height = self.LAND_HEIGHT
         req.duration = self.LAND_DURATION
-        self.land_cli.call_async(req)
+        # should_land is already True, so update() has stopped publishing and
+        # it is safe to relax the priority. Without this the firmware stays
+        # latched at CRTP, the descent trajectory is planned and then rejected
+        # setpoint by setpoint, and the drone hangs on its last velocity
+        # command until supervisor.c's 2 s watchdog cuts the motors -- which is
+        # the "land just drops it out of mid air" report.
+        self._release_to_high_level(lambda: self.land_cli.call_async(req), 'land')
 
     def _debug_goto(self, msg: DebugFlags):
         self.taking_off = False
         self.should_land = False
+        # A new GoTo supersedes whatever we were holding.
+        self.goto_hold = None
         # An explicit GoTo is a flight command like takeoff, so it authorises the
         # setpoint stream too -- otherwise update() would go quiet on arrival and
         # leave the drone parked on the high-level commander.
@@ -520,10 +742,19 @@ class DroneController(Node):
                     self.goto_speed = dist / float(msg.duration)
                 if yaw_err > 0.0:
                     self.goto_yaw_speed = yaw_err / float(msg.duration)
+            # The GoTo now ends when the DRONE arrives, not when the ramp
+            # does, so it needs a way out if the drone never gets there.
+            # Same budget as the real path: the requested flight time plus
+            # goto_timeout_s of slack.
+            ramp_s = float(msg.duration) if msg.duration > 0.0 else (
+                float(self.GOTO_DURATION.sec) + self.GOTO_DURATION.nanosec * 1e-9)
+            self.goto_deadline = self.get_clock().now() + RCLDuration(
+                seconds=ramp_s + self.GOTO_TIMEOUT_S)
             self.get_logger().info(
                 f'GoTo (sim setpoint): [{msg.x:.3f} {msg.y:.3f} {msg.z:.3f}] '
                 f'yaw={np.degrees(msg.yaw):.1f} deg, ramping at '
-                f'{self.goto_speed:.3f} m/s / {self.goto_yaw_speed:.3f} rad/s')
+                f'{self.goto_speed:.3f} m/s / {self.goto_yaw_speed:.3f} rad/s '
+                f'(timeout {ramp_s + self.GOTO_TIMEOUT_S:.0f}s)')
             return
 
         if not self.goto_cli.service_is_ready():
@@ -546,12 +777,14 @@ class DroneController(Node):
         req.duration = (self._to_duration(msg.duration) if msg.duration > 0
                         else self.GOTO_DURATION)
 
-        # call_async, never spin_until_future_complete: we are inside a
-        # subscription callback and spinning here re-enters the executor.
-        self.goto_cli.call_async(req)
-
-        # Hand the drone to the high-level commander and go quiet until it
-        # arrives at the position from this very message.
+        # ORDER MATTERS, and this is the whole bug fix on the real path.
+        #
+        # goto_wait is set FIRST, because that is what makes _await_goto() stop
+        # update() from publishing. Only once the 50 Hz cmd_velocity_world
+        # stream is silent can the priority be relaxed and the GoTo sent -- one
+        # more streamed setpoint after the relax would re-latch CRTP and stop
+        # the planner again, and the drone would sit on its last velocity
+        # command until the firmware watchdog cut the motors.
         self.goto_wait = np.array([msg.x, msg.y, msg.z], dtype=float)
         # The watchdog has to outlast the planner: a 30 s GoTo with a 20 s
         # timeout would yank control back mid-flight. Grant the flight time
@@ -561,6 +794,16 @@ class DroneController(Node):
         self.goto_wait_deadline = self.get_clock().now() + RCLDuration(
             seconds=timeout_s)
         self.pos_desired = None
+        # Whatever the RAN last asked for is now stale. Clearing it here means
+        # that when _await_goto() hands control back on arrival, the first
+        # setpoint we stream is a hover rather than a lurch in the old
+        # direction.
+        self.vel_desired = np.zeros(3)
+
+        # call_async, never spin_until_future_complete: we are inside a
+        # subscription callback and spinning here re-enters the executor.
+        self._release_to_high_level(
+            lambda: self.goto_cli.call_async(req), 'go_to')
         self.get_logger().info(
             f'GoTo: holding all other control until {self.goto_wait} is reached '
             f'(timeout {timeout_s:.0f}s).')
@@ -568,6 +811,7 @@ class DroneController(Node):
     def cmd_vel_callback(self, msg: Twist):
         self.taking_off = False
         self.should_hover = False
+        self.goto_hold = None
         self.last_teleop_msg_time = self.get_clock().now()
         self.get_logger().info(f'Teleop: setting speeds to {[msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z]}')
         self.set_speeds([msg.linear.x, msg.linear.y, msg.linear.z], [msg.angular.x, msg.angular.y, msg.angular.z])
@@ -578,7 +822,64 @@ class DroneController(Node):
         norm = np.linalg.norm(v)
         return v / norm if norm > 0 else v
 
+    def ran_status_callback(self, msg: Bool):
+        """React to the RAN publisher being switched on or off.
+
+        Only the OFF edge does anything. Turning the model off has to drop the
+        heading we are still holding, or "off" means nothing at all: the RAN
+        stops publishing, vel_desired keeps its last value, and update() goes
+        on commanding it at 50 Hz forever. Hovering instead is the honest
+        reading of "the model is no longer flying this drone".
+
+        Turning it back ON needs no action -- the next desired_heading clears
+        should_hover by itself, and inventing a velocity here would move the
+        drone before the model had actually asked for anything.
+
+        A GoTo in progress is left strictly alone. It does not belong to the
+        RAN either way, and stomping should_hover mid-GoTo would fight the
+        ramp.
+        """
+        self.ran_enabled = bool(msg.data)
+        if self.ran_enabled:
+            return
+        if self._goto_owns_drone():
+            self.get_logger().info(
+                'RAN publisher OFF (GoTo in progress; letting it finish).')
+            return
+        self.get_logger().warn(
+            f'RAN publisher OFF: dropping the held heading and hovering '
+            f'{self.drone_name}. It would otherwise keep flying the last '
+            'direction the model gave it.')
+        self.vel_desired = np.zeros(3)
+        self.should_hover = True
+
     def des_heading_callback(self, msg: Vector3):
+        # A GoTo owns the drone until it finishes, and so does a landing.
+        #
+        # This one guard is what fixes "the RAN takes over the GoTo partway
+        # through". The RAN publishes at up to 50 Hz whenever its bump clears
+        # bump_threshold, and this callback used to clear should_hover and
+        # overwrite vel_desired unconditionally -- so the first heading to
+        # arrive after a GoTo was commanded simply flew the drone at the
+        # attractor target instead. Dropping the message (rather than
+        # buffering it) is deliberate: the model is stateful and re-publishes
+        # continuously, so the next heading after the GoTo ends is a fresh one
+        # and the handover needs no extra bookkeeping.
+        if self.should_land or self._goto_owns_drone():
+            return
+        # The switch-off has to be sticky, not a one-shot reset.
+        #
+        # The RAN sets its flag and publishes the status, but headings it had
+        # already put on the wire keep arriving for a tick or two afterwards.
+        # Without this check those stragglers land after ran_status_callback
+        # has cleared should_hover and vel_desired, re-arming the exact command
+        # we just dropped -- so the drone flies off anyway and the button looks
+        # broken. Ignoring them until the RAN says it is back on closes that
+        # window.
+        if not self.ran_enabled:
+            return
+        # The model is asking for the drone back, so stop holding station.
+        self.goto_hold = None
         self.should_hover = False
         self.vel_desired = self.max_speed * np.array([msg.x, msg.y, msg.z])
 
@@ -600,13 +901,39 @@ class DroneController(Node):
             self.prev_pos = self.pos.copy()
             return
 
+        # REAL: after a GoTo lands, the onboard planner is still holding the
+        # target with genuine position control (planner.c stays in
+        # TRAJECTORY_STATE_FLYING and piecewise_eval clamps to the final point
+        # with zero velocity, so it keeps feeding the supervisor watchdog).
+        # Resuming our VelocityWorld stream would take that away and replace it
+        # with "hold zero velocity", which has NO position feedback -- the
+        # drone would slide off the point it just reached. Staying quiet is
+        # strictly better than anything we can express on this topic.
+        if self.real and self.goto_hold is not None:
+            self.prev_time = now
+            self.prev_pos = self.pos.copy()
+            return
+
         self._step_goto(dt)
         self._step_yaw(dt)      # must run AFTER _update_pos, which resets orientation
 
         commanded_vel = np.array(self.vel_desired, dtype=float)
 
         if time_from_teleop > self.teleop_timeout:
-            if self.should_hover:
+            if self.goto_hold is not None:
+                # Holding station after a GoTo. The position setpoint below is
+                # what actually does the work; the velocity has to be zero or
+                # we would be asking the drone to hold a point AND drift at the
+                # same time.
+                commanded_vel = np.zeros(3)
+            elif self.goto_target is not None:
+                # SIM GoTo owns the drone. commanded_vel starts as the RAN's
+                # vel_desired, and flying that instead of the ramp is precisely
+                # how the model used to hijack a GoTo -- des_heading_callback
+                # now refuses to update it mid-GoTo, but the stale value would
+                # still be commanded here, so the ramp has to win outright.
+                commanded_vel = np.array(self.goto_vel, dtype=float)
+            elif self.should_hover:
                 # np.array(0.0, 0.0, 0.0) was a TypeError waiting to happen -
                 # numpy reads the 2nd positional as dtype. should_hover is set
                 # from a TF dropout, so the first tracking hiccup would have
@@ -620,6 +947,8 @@ class DroneController(Node):
             self.pos_desired = None
             self.goto_target = None
             self.goto_wait = None
+            self.goto_hold = None
+            self.goto_deadline = None
             # self.get_logger().info(f'wrong area')
 
         if not self.tf_ready:
@@ -659,6 +988,29 @@ class DroneController(Node):
 
         self.movement_msg.header.stamp = self.get_clock().now().to_msg()
         self.movement_msg.header.frame_id = self.drone_name
+
+        # SIM GoTo: command the RAMPED setpoint instead of the measured pose.
+        #
+        # _update_pos() copies the measured transform into pose.position on
+        # every tick, which is what the sim's position PID reads. Leaving it
+        # there means the commanded position always equals the current position
+        # -- zero error, no restoring force, and the GoTo ramp that _step_goto
+        # so carefully computed never reaches the wire. Overriding it here is
+        # what actually makes a sim GoTo fly.
+        #
+        # Deliberately scoped to an active GoTo. pos_desired also holds the
+        # takeoff point during ordinary RAN flight, and commanding THAT would
+        # tether the drone to where it took off from.
+        commanded_pos = None
+        if not self.real:
+            if self.goto_target is not None and self.pos_desired is not None:
+                commanded_pos = self.pos_desired       # travelling: fly the ramp
+            elif self.goto_hold is not None:
+                commanded_pos = self.goto_hold         # arrived: stay put
+        if commanded_pos is not None:
+            self.movement_msg.pose.position.x = float(commanded_pos[X_DIR])
+            self.movement_msg.pose.position.y = float(commanded_pos[Y_DIR])
+            self.movement_msg.pose.position.z = float(commanded_pos[Z_DIR])
 
         if self.real:
             velocity_msg = VelocityWorld()
@@ -799,8 +1151,17 @@ def main(args=None):
                         and z > drone_controller.LAND_MIN_HEIGHT)
 
             if airborne:
-                # height is ABSOLUTE (LAND_HEIGHT == floor), not a descent distance.
+                # height is ABSOLUTE (LAND_HEIGHT == floor), not a descent
+                # distance. This used to pass -pos[Z_DIR], contradicting the
+                # comment sitting right above it and the fix already made in
+                # _debug_land(): at z=1.2 it commanded an absolute -1.2 m, so
+                # the descent ramp never levelled off at the floor and the
+                # controller kept driving down into it.
                 land_height = drone_controller.LAND_HEIGHT
+                # Same firmware priority latch that broke the GUI Land button.
+                # launch_requested is already False, so update() has stopped
+                # publishing and it is safe to hand over.
+                drone_controller.send_notify_setpoints_stop_req()
                 land_resp = drone_controller.send_land_req(group_mask=drone_controller.GROUP_MASK, height=land_height, duration=drone_controller.LAND_DURATION)
                 drone_controller.get_logger().info(f'Requesting drone {drone_controller.drone_name} to land from z={z:.3f} m to height={land_height}.')
                 if land_resp is not None: time.sleep(drone_controller.land_duration_s)

@@ -105,11 +105,40 @@ common:
   static_target_qualities: '20.0'
 
   # Take off as soon as the controller starts, instead of waiting for a takeoff
-  # command from the debug GUI. Independent of `teleop`
+  # command from the debug GUI. Genuinely independent of `teleop` now -- the
+  # real launch file used to override this default to 'false' whenever teleop
+  # was on, which made the comment true on paper and false in practice.
   auto_launch: 'true'
+
+  # Whether the RAN server publishes <drone>/desired_heading, i.e. whether the
+  # attractor model actually flies the drone.
+  #
+  # This is the half of the old `teleop` flag that had nothing to do with the
+  # keyboard. `teleop` used to open the teleop window AND silence the model,
+  # so the two were mutually exclusive for no reason other than being wired to
+  # the same argument. They're separate now and every combination is legal:
+  #
+  #   ran_enabled:='true'  teleop:='false'  model flies it (the normal case)
+  #   ran_enabled:='true'  teleop:='true'   model flies it, keyboard overrides
+  #                                         for teleop_timeout seconds per
+  #                                         keypress, then the model resumes
+  #   ran_enabled:='false' teleop:='true'   pure manual flight
+  #   ran_enabled:='false' teleop:='false'  nothing commands it; GoTo and Land
+  #                                         from the debug GUI are all it does
+  #
+  # 'false' does NOT stop the model. It keeps integrating and keeps drawing
+  # itself in RViz, so you can watch a bump form and settle while flying the
+  # drone some other way, and hand control back without waiting for the network
+  # to re-converge. Only the publish is held back.
+  #
+  # This is the STARTING state. The debug GUI has a "RAN Publisher" button that
+  # toggles it live on <drone>/ran_enabled, so you don't have to relaunch to
+  # take the model in or out of the loop mid-flight.
+  ran_enabled: 'true'
 
 #Real flight launch params
 real:
+  #do not touch this line
   real: 'true' #switches the cf server backend to cflib (proper one for connecting to drone) instead of sim backend
 
   # Record a rosbag to bags/flight_<timestamp>/.
@@ -118,12 +147,15 @@ real:
   # Capital T on purpose -- see the note at the top of this file.
   rviz: 'True'
 
-  # Manual keyboard flight. With teleop:='true' the launch file also opens a
-  # teleop_twist_keyboard window, controller_server skips its auto-takeoff (you
-  # command it from the debug GUI, and /cmd_vel can only steer a drone that is
-  # already airborne), and the RAN server stops publishing
-  # <drone>/desired_heading so the model can't fight the keyboard. Leave it
-  # false for normal flights.
+  # Manual keyboard flight. teleop:='true' opens a teleop_twist_keyboard
+  # window, and that is now the ONLY thing it does.
+  #
+  # It used to also force auto_launch off and silence the RAN server. Those are
+  # `auto_launch` and `ran_enabled` in the common section above; set them
+  # yourself if you want them. Note in particular that the auto-takeoff is no
+  # longer suppressed for you, so if you want to command the takeoff from the
+  # debug GUI -- which you usually do under teleop, since /cmd_vel can only
+  # steer a drone that is already airborne -- keep auto_launch at 'false'.
   #
   # NOTE: unrelated to the `teleop` argument real_drone.launch.py passes into
   # crazyswarm2's own launch.py, which is its gamepad stack and stays off.
@@ -155,6 +187,7 @@ real:
   sigkill_timeout: '2'
 
 sim:
+  #do not touch this line - this switches the crazyflie backend to its sim backend
   real: 'false'
 
   # IMPORTANT: a bug was found with crazyflie's physics in simulation, where it slowly falls due to gravity over time.
@@ -171,11 +204,16 @@ sim:
   sigterm_timeout: '2'
   sigkill_timeout: '2'
 
-  # There is no teleop MODE in sim: sim_drone.launch.py declares no `teleop`
-  # argument, opens no keyboard window, and pins the RAN server's
-  # teleop_enabled to false. Listed here only so that is obvious.
-  # However you should be able to run teleop twist and move the drone in sim --
-  # the controller subscribes to /cmd_vel either way, so just start
-  # teleop_twist_keyboard yourself. Pair it with auto_launch:='false' if you
-  # don't want the drone climbing on its own first.
-  teleop: 'false'
+  # There is still no teleop MODE in sim: sim_drone.launch.py declares no
+  # `teleop` argument and opens no keyboard window, so the value here does
+  # nothing. Listed only so that is obvious.
+  #
+  # You can still fly sim from the keyboard -- the controller subscribes to
+  # /cmd_vel either way, so just start teleop_twist_keyboard yourself. Pair it
+  # with auto_launch:='false' if you don't want the drone climbing on its own
+  # first.
+  #
+  # `ran_enabled` from the common section DOES apply here, and sim honours it
+  # properly now; it used to be pinned on because it was derived from this
+  # dead argument.
+  teleop: 'true'

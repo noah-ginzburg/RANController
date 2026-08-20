@@ -5,12 +5,13 @@ import rclpy
 from rclpy.node import Node
 import numpy as np
 from geometry_msgs.msg import Vector3, Point
-from std_msgs.msg import ColorRGBA
+from std_msgs.msg import Bool, ColorRGBA
 
 import pyvista as pv
 import tf2_ros
 from rclpy.duration import Duration as RCLDuration
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from rclpy.qos import (QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy,
+                       QoSDurabilityPolicy)
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -45,12 +46,25 @@ class SphericalRANServer(Node):
         super().__init__('spherical_RAN_server')
         self.declare_parameter('drone_name', 'cf01')
         self.declare_parameter('ran_vis', True)
-        # Set by real_drone.launch.py teleop:=true. Under teleop the person at the
-        # keyboard owns the drone, so the model must not be commanding a heading
-        # at the same time; the controller would act on both and end up fighting
-        # the keyboard. The model still runs and still draws in RViz, and only
-        # the heading publish is held back.
-        self.declare_parameter('teleop_enabled', False)
+        # Whether the attractor model actually commands the drone.
+        #
+        # This used to be `teleop_enabled`, set from the launch file's `teleop`
+        # argument, which made keyboard flight and model flight mutually
+        # exclusive: opening a teleop window was the only way to silence the
+        # model, and silencing the model was an unavoidable side effect of
+        # opening one. They are now separate. `teleop` opens the keyboard
+        # window and nothing else; this decides whether <drone>/desired_heading
+        # is published, and the two can be in any combination.
+        #
+        # Running both at once is a legitimate combination rather than an
+        # accident: controller_server's teleop_timeout means a /cmd_vel message
+        # takes the drone for teleop_timeout seconds and the model resumes
+        # afterwards, so the keyboard acts as a manual override rather than a
+        # competitor.
+        #
+        # This is the STARTING value. The debug GUI can flip it at runtime on
+        # <drone>/ran_enabled -- see _ran_enabled_callback.
+        self.declare_parameter('ran_enabled', True)
 
         # These defaults follow mean_field_model_3d.ipynb. In practice they're
         # set in ran_params.yaml, which overrides whatever is written here.
@@ -100,7 +114,7 @@ class SphericalRANServer(Node):
 
         self.drone_name = self.get_parameter('drone_name').value
         self.ran_vis = self.get_parameter('ran_vis').value
-        self.teleop_enabled = self.get_parameter('teleop_enabled').value
+        self.ran_enabled = bool(self.get_parameter('ran_enabled').value)
         self.beta = self.get_parameter('beta').value
         self.v = self.get_parameter('v').value
         self.sigma = self.get_parameter('sigma').value
@@ -165,15 +179,35 @@ class SphericalRANServer(Node):
                              history=QoSHistoryPolicy.KEEP_LAST)
         self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz', vis_qos)
         self._vis_count = 0
+
+        # Runtime toggle from the debug GUI. A plain topic rather than a
+        # parameter service keeps the GUI's "never call a service, a blocked
+        # GUI is a dead emergency stop" rule intact.
+        self.ran_enable_sub = self.create_subscription(
+            Bool, f'{self.drone_name}/ran_enabled', self._ran_enabled_callback, 10)
+        # And the answer back, so the GUI's button shows what is actually true
+        # rather than what it last asked for. TRANSIENT_LOCAL because the GUI
+        # and this node start in whatever order launch feels like: a late
+        # subscriber still receives the current state instead of sitting blank
+        # until someone clicks something.
+        status_qos = QoSProfile(depth=1,
+                                reliability=QoSReliabilityPolicy.RELIABLE,
+                                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                                history=QoSHistoryPolicy.KEEP_LAST)
+        self.ran_status_pub = self.create_publisher(
+            Bool, f'{self.drone_name}/ran_enabled_status', status_qos)
         if self.collision_avoidance:
             self.get_logger().warn(
                 f'collision_avoidance ENABLED for {self.drone_name}: a drone within '
                 f'{self.neighbour_radius:.2f} m reverses the heading xy. This '
                 'overrides the attractor model whenever it triggers.')
-        if self.teleop_enabled:
+        if not self.ran_enabled:
             self.get_logger().warn(
-                f'teleop_enabled: {self.drone_name}/desired_heading will NOT be '
-                'published. The model still runs and still draws in RViz.')
+                f'ran_enabled=false: {self.drone_name}/desired_heading will NOT '
+                'be published. The model still runs and still draws in RViz, so '
+                'you can watch the bump form without the drone acting on it. '
+                'Toggle it on from the debug GUI.')
+        self.ran_status_pub.publish(Bool(data=self.ran_enabled))
         self.timer = self.create_timer((1.0/self.update_rate), self.update)
         self.heading_msg = Vector3()
         self.heading_msg.x = 0.0
@@ -256,11 +290,13 @@ class SphericalRANServer(Node):
         if r > self.bump_threshold:
             vec = vec / r
             self.heading_msg = Vector3(x=float(vec[X]), y=float(vec[Y]), z=float(vec[Z]))
-            # Under teleop the heading is still computed and still drawn, but it
-            # never goes out. The controller takes whatever arrives on
-            # desired_heading, scales it by max_speed and commands it, so
-            # publishing here would mean competing with the keyboard.
-            if not self.teleop_enabled:
+            # With the publisher off the heading is still computed and still
+            # drawn, it just never goes out. The controller acts on whatever
+            # arrives on desired_heading -- it scales it by max_speed and
+            # commands it -- so holding the publish back here is the whole
+            # mechanism for taking the model out of the loop without stopping
+            # it.
+            if self.ran_enabled:
                 self.heading_pub.publish(self.heading_msg)
 
         # self.get_logger().info(f'heading: x={vec[X]:.3f} y={vec[Y]:.3f} z={vec[Z]:.3f} | r={r:.3f}')
@@ -269,6 +305,25 @@ class SphericalRANServer(Node):
             self._display_ran_rviz(self.nodes, self.z, vec)
 
         self.prev_time = now
+
+    def _ran_enabled_callback(self, msg: Bool):
+        """Turn the heading publisher on or off at runtime.
+
+        Only the publish is gated. The model keeps integrating and keeps
+        drawing itself in RViz either way, which is the point: you can watch
+        the bump form and settle while the drone is under manual or GoTo
+        control, then hand it back without waiting for the network to
+        re-converge from a standing start.
+        """
+        want = bool(msg.data)
+        if want == self.ran_enabled:
+            return
+        self.ran_enabled = want
+        self.get_logger().warn(
+            f'RAN publisher {"ENABLED" if want else "DISABLED"} for '
+            f'{self.drone_name} ({self.drone_name}/desired_heading '
+            f'{"is now live" if want else "is now silent"}).')
+        self.ran_status_pub.publish(Bool(data=self.ran_enabled))
 
     def _get_targets_from_tf(self):
         targets = []

@@ -15,7 +15,7 @@ up anything you care about somewhere outside the repo.
 
 ```bash
 ros2 run flight_analysis flight_data                 # most recent bag
-ros2 run flight_analysis flight_data <bag>           # a specific one
+ros2 run flight_analysis flight_data <bag>           # a specific bag folder, e.g. ~/biodrone/bags/flight_20260820_144338
 ros2 run flight_analysis flight_data --help
 ```
 

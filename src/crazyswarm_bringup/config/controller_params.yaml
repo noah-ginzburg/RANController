@@ -84,8 +84,13 @@
     #
     # Raising this value makes Ctrl+C emergency-stop from higher up, so the
     # drone drops instead of landing. Lowering it risks the props spinning up
-    # on the floor. 0.5 is the value that's been tested since 2026-08-13.
-    land_min_height: 0.5
+    # on the floor. 0.5 was the value tested from 2026-08-13.
+    #
+    # 0.499 rather than 0.5 on purpose: launch_height is also 0.5, so at normal
+    # hover height the `z > land_min_height` test was a coin flip between
+    # landing cleanly and cutting the motors. A millimetre below takes the
+    # hovering case off the boundary without meaningfully changing the guard.
+    land_min_height: 0.499
 
     # ---- GoTo ------------------------------------------------------------
 

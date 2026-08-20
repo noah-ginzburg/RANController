@@ -115,12 +115,11 @@ def launch_controllers(context, *args, **kwargs):
     # them; launch applies the list in order and the last write wins.
     controller_params = LaunchConfiguration('controller_params').perform(context)
     ran_params = LaunchConfiguration('ran_params').perform(context)
-    # teleop:='true' silences the RAN server's heading publish so the model
-    # can't fight the keyboard. The keyboard window itself is started in
-    # generate_launch_description().
-    teleop_enabled = LaunchConfiguration('teleop').perform(context) == 'true'
-    # Its own argument, not a synonym for the one above -- teleop only moves its
-    # default. See the declaration in generate_launch_description().
+    # Whether the RAN server publishes <drone>/desired_heading at startup.
+    # Independent of `teleop` -- see the declarations in
+    # generate_launch_description() for why those two came apart. The debug GUI
+    # can flip this at runtime on <drone>/ran_enabled either way.
+    ran_enabled = LaunchConfiguration('ran_enabled').perform(context) == 'true'
     auto_launch = LaunchConfiguration('auto_launch').perform(context) == 'true'
 
     # Static (non-flying) targets: nothing simulated, just a `mocap -> <name>`
@@ -194,7 +193,7 @@ def launch_controllers(context, *args, **kwargs):
             # both use_static_targets:=false and :=true with nothing enabled.
             ran_node_params = [ran_params,
                                {'drone_name': name}, {'all_drones': ran_targets},
-                               {'teleop_enabled': teleop_enabled}]
+                               {'ran_enabled': ran_enabled}]
             if target_names and target_qualities:
                 ran_node_params += [{'target_names': target_names},
                                     {'target_qualities': target_qualities}]
@@ -255,20 +254,17 @@ def generate_launch_description():
         'ran_params',
         default_value=os.path.join(pkg_bringup, 'config', 'ran_params.yaml'))
 
-    # Manual keyboard flight on top of the normal hardware stack. Two things
-    # change in the nodes when this is true (see launch_controllers):
+    # Open a teleop_twist_keyboard window, and NOTHING else.
     #
-    #   1. `auto_launch` defaults to false, so controller_server does not take
-    #      off on its own. The takeoff is yours to command from the debug GUI,
-    #      and that service call is also what sets launch_requested, the
-    #      interlock authorising the 50 Hz setpoint stream -- until it happens
-    #      the keyboard does nothing at all, since /cmd_vel can only steer a
-    #      drone that's already in the air. Only the DEFAULT moves, so
-    #      `teleop:=true auto_launch:=true` is still a legal (if lively) combo.
-    #   2. The RAN server stops publishing <drone>/desired_heading. The model
-    #      still runs and still draws in RViz, but if it published, the
-    #      controller would scale that heading by max_speed and command it,
-    #      which means competing with the keyboard.
+    # This argument used to mean three things at once: open the window, force
+    # auto_launch off, and silence the RAN server. That made keyboard flight
+    # and model flight mutually exclusive as a side effect of how the flag was
+    # wired rather than as a decision anyone made. The other two now stand on
+    # their own as `auto_launch` and `ran_enabled`, so any combination is
+    # reachable -- including keyboard and model together, which is a useful
+    # one: controller_server's teleop_timeout hands the drone back to the model
+    # teleop_timeout seconds after the last keypress, so the keyboard behaves
+    # as a manual override rather than a competitor.
     #
     # Wait for the climb to finish before you touch the keyboard. The first
     # /cmd_vel message clears `taking_off` and starts the setpoint stream, which
@@ -276,15 +272,20 @@ def generate_launch_description():
     # the takeoff.
     teleop_arg = DeclareLaunchArgument('teleop', default_value=args['teleop'])
 
+    # Whether the RAN server publishes <drone>/desired_heading at startup. Off
+    # means the model still runs and still draws in RViz, it just doesn't
+    # command the drone -- handy for watching a bump form while you fly the
+    # thing yourself. The debug GUI's "RAN Publisher" button flips it live, so
+    # this is only the starting state.
+    ran_enabled_arg = DeclareLaunchArgument(
+        'ran_enabled', default_value=args['ran_enabled'])
+
     # Whether the controller takes off by itself at startup or waits for a
-    # takeoff from the debug GUI. Separate from `teleop`: that argument only
-    # supplies a different default here, and the yaml value applies whenever
-    # teleop is off.
+    # takeoff from the debug GUI. No longer derived from `teleop`: that
+    # coupling is what made the two inseparable. The yaml value now applies
+    # whatever else is set.
     auto_launch_arg = DeclareLaunchArgument(
-        'auto_launch',
-        default_value=PythonExpression([
-            "'false' if '", LaunchConfiguration('teleop'), "' == 'true' else '",
-            args['auto_launch'], "'"]))
+        'auto_launch', default_value=args['auto_launch'])
     teleop_speed_arg = DeclareLaunchArgument(
         'teleop_speed', default_value=args['teleop_speed'])
     teleop_turn_arg = DeclareLaunchArgument(
@@ -362,6 +363,7 @@ def generate_launch_description():
         controller_params_arg,
         ran_params_arg,
         teleop_arg,
+        ran_enabled_arg,
         auto_launch_arg,
         teleop_speed_arg,
         teleop_turn_arg,

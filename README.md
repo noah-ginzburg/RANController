@@ -53,7 +53,6 @@ biodrone/
     │   └── controller_server.py    #   takeoff/land/goto + velocity control
     │
     ├── spherical_ran/              # spherical RAN model
-    │   ├── spherical_RAN_server_lloyd.py    # Lloyd-relaxation variant (launched)
     │   ├── spherical_RAN_server.py          # continuous attractor server
     │   └── generate_kernel_cache.py         # precomputes the RAN kernel
     │
@@ -149,16 +148,21 @@ Both launch files share these unless noted otherwise.
 | Argument | Default | Meaning |
 |---|---|---|
 | `real` | `true` | Hardware vs simulation |
-| `drone_names` | `cf09` | Space-separated drone list |
+| `drone_names` | `cf09` | Comma-separated drone list |
 | `ran_drones` | `cf09` | Which drones run a RAN server |
 | `launch_height` | `0.5` | Takeoff altitude (m) |
-| `hover_speed_real` | `0.0` | Real-drone hover speed |
-| `hover_speed_sim` | `0.0` | Sim hover speed |
-| `target_names` | `''` | Target drones/objects |
-| `target_qualities` | `''` | Per-target quality, positional |
+| `hover_speed_sim` | `0.0` | Sim hover speed (real hardware always gets 0.0) |
+| `auto_launch` | `false` | Take off at startup instead of waiting for the GUI's Takeoff button |
+| `target_names` | `''` | Weight overrides: which existing targets to reweight |
+| `target_qualities` | `''` | The weights themselves, zipped positionally |
 | `use_static_targets` | `false` | Use `config/static_targets.yaml` |
 | `record` | `true` | Record a rosbag (real only) |
 | `rviz` | `True` | Launch RViz (real only) |
+| `teleop` | `false` | Opens a `teleop_twist_keyboard` window, and nothing else (real only) |
+| `ran_enabled` | `true` | Whether the RAN server publishes `<drone>/desired_heading`. Independent of `teleop`; the debug GUI toggles it live |
+| `teleop_speed` | `0.2` | Keyboard linear speed, m/s (real only) |
+| `teleop_turn` | `0.5` | Keyboard turn rate, rad/s (real only) |
+| `ws_setup` | `~/biodrone/install/setup.bash` | Sourced inside the teleop window (real only) |
 
 ## Safety
 

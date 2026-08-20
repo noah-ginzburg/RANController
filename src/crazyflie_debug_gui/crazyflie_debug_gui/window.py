@@ -473,6 +473,16 @@ class DroneWindow(QWidget):
         goto_row.addWidget(self.goto_dur)
         goto_row.addWidget(goto_btn)
 
+        # Takes the attractor model in and out of the loop without a relaunch.
+        # Deliberately NOT a checkbox: a checkbox shows what you clicked, and
+        # what we want on screen is what the RAN server reports it is actually
+        # doing. The label is driven entirely from the status topic in
+        # refresh(), so if the server is down or has not answered yet it reads
+        # "?" rather than confidently showing a state nothing is in.
+        self.ran_toggle = QPushButton("Toggle RAN Publisher (Currently: ?)")
+        self.ran_toggle.setMinimumHeight(80)
+        self.ran_toggle.clicked.connect(self.on_toggle_ran)
+
         pos_row = QHBoxLayout()
         current_xyz_button = QPushButton("Input Current XYZ")
         current_xyz_button.clicked.connect(self.on_input_current_xyz)
@@ -485,6 +495,7 @@ class DroneWindow(QWidget):
         layout.addLayout(button_row)
         layout.addLayout(goto_row)
         layout.addLayout(pos_row)
+        layout.addWidget(self.ran_toggle)
         box.setLayout(layout)
         return box
 
@@ -576,6 +587,20 @@ class DroneWindow(QWidget):
             return
         self.node.send_estop()
         self.log.append("EMERGENCY STOP sent")
+
+    def on_toggle_ran(self):
+        if self.node is None:
+            return
+        # Unknown state means the RAN server has not reported in. Ask for ON,
+        # since that is the launch default and the state you are most likely to
+        # be trying to get back to; the status topic corrects the label either
+        # way once the server answers.
+        current = self.node.ran_enabled
+        want = True if current is None else not current
+        self.node.send_ran_enabled(want)
+        self.log.append(
+            f"RAN publisher: requested {'ON' if want else 'OFF'}"
+            + (" (previous state unknown)" if current is None else ""))
 
     def on_goto(self):
         if self.node is None:
@@ -671,6 +696,24 @@ class DroneWindow(QWidget):
         self.pitch_error_bar.set_value(None if rpy is None else rpy[1])
         self.yaw_error_bar.set_value(None if rpy is None else rpy[2])
         self.yaw_error_plot.add(None if rpy is None else rpy[2])
+
+        # --- RAN publisher toggle --------------------------------------
+        # Driven from the status topic, never from the last click, so the
+        # button reports the model's real state rather than our intent.
+        ran = n.ran_enabled
+        if ran is None:
+            # "no reply" rather than a bare "?": the grey tells you something is
+            # off but not what, and the usual cause is the RAN server not being
+            # up at all, which is worth saying out loud.
+            self.ran_toggle.setText("Toggle RAN Publisher (Currently: ? - no reply)")
+            self.ran_toggle.setStyleSheet(
+                f"background-color: {INK_MUTED}; color: white; font-weight: bold;")
+        else:
+            self.ran_toggle.setText(
+                f"Toggle RAN Publisher (Currently: {'ON' if ran else 'OFF'})")
+            self.ran_toggle.setStyleSheet(
+                f"background-color: {GOOD if ran else WARNING}; "
+                "color: white; font-weight: bold;")
 
         # --- Motors ----------------------------------------------------
         motors = n.motors()
@@ -820,6 +863,10 @@ class _FakeNode:
 
     def __init__(self):
         self.t = 0.0
+        # Mirrors TelemetryModel.ran_enabled. Starts True rather than None so
+        # the toggle renders in its normal ON state for layout work; flip it to
+        # None here if you want to see the "no reply" styling.
+        self.ran_enabled = True
 
     def tick(self):
         self.t += 0.1
@@ -898,6 +945,12 @@ class _FakeNode:
 
     def send_estop(self):
         print("[fake] estop")
+
+    def send_ran_enabled(self, enabled):
+        # Standalone there is no RAN server to answer on the status topic, so
+        # this stands in for the round trip and the button still updates.
+        self.ran_enabled = bool(enabled)
+        print(f"[fake] ran_enabled={enabled}")
 
     def send_goto(self, x, y, z, yaw=0.0, duration=0.0):
         print(f"[fake] goto x={x} y={y} z={z} yaw={yaw} duration={duration}")

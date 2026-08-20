@@ -53,7 +53,9 @@
     # once it forms.
     u: 35.0
 
-    # Overall time constant multiplier on the update.
+    # PARAMETER ONLY FOR TESTING, LEAVE THIS AT 1.0. The idea was to speed up ran 
+    # convergence speed, but that's just what dt does. This was an overall time constant multiplier on the update, 
+    #  and an artifact i didnt have time to remove.
     rate: 1.0
 
     # Icosphere subdivision level, which determines how many nodes there are.
@@ -116,7 +118,7 @@
 
     # ---- Timing ----------------------------------------------------------
 
-    # How often the model steps and publishes, in Hz.
+    # How often the model steps and publishes (IN ROS), in Hz.
     update_rate: 50.0
 
     # How long the node waits before it starts spinning, in seconds. This gives

@@ -12,6 +12,7 @@
   <depend>crazyflie_debug_interfaces</depend>
   <depend>crazyflie_interfaces</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>motion_capture_tracking_interfaces</depend>
   <!-- Raw Vicon frames, for the dropped/occluded counters. exec_depend, not
