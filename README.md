@@ -7,26 +7,67 @@ Crazyswarm2.
 
 Everything runs on ROS 2 Humble. All of `src/` is vendored as regular files
 rather than git submodules, so a plain `git clone` gives you the whole
-workspace with nothing extra to initialize. ROS 2 unbag, Crazyswarm2, and
-ros2-vicon-receiver were originally cloned from other repositories; links are
-below.
+workspace with nothing extra to initialize.
 
-One thing worth calling out: `vicon_bridge.py` in ros2-vicon-receiver was
-written by me, not taken from upstream.
+## What's mine and what isn't
+
+Most of `src/` is other people's work. The parts written for this project are:
+
+| Mine | What it is |
+|---|---|
+| `RAN/` | **The model itself** — mean-field and neural RAN notebooks, the bifurcation sweep, and the writeup. This is the research; everything else is the machinery to fly it. |
+| `src/spherical_ran/` | The SAN server — the model above, running live as a ROS 2 node, publishing a heading per drone |
+| `src/crazyflie_controller/` | Per-drone flight controller: takeoff/land/goto, velocity streaming, command arbitration |
+| `src/crazyswarm_bringup/` | Top-level orchestration — the launch files and all the config YAML |
+| `src/crazyflie_debug_gui/` | The debug window: live telemetry, manual commands, ESTOP (`crazyflie_debug_interfaces/` is just its message package) |
+| `src/flight_analysis/` | Post-flight analysis path — bag → CSV → plots |
+| `src/ros2-vicon-receiver/vicon_bridge.py` | **One file inside a vendored package.** The frame filtering, `/poses`, and TF publishing are mine; the rest of that package is not. |
+
+Everything else is external. Most of it has been **patched locally**, so don't
+assume any of it matches upstream:
+
+| Vendored | Upstream |
+|---|---|
+| `src/crazyswarm2/` | https://github.com/IMRCLab/crazyswarm2 — the vendored copy looks like an SML-flavoured fork rather than mainline; confirm before diffing |
+| `src/ros2-vicon-receiver/` | https://github.com/andreacamisa/ros2-vicon-receiver |
+| `src/motion_capture_tracking/` | https://github.com/IMRCLab/motion_capture_tracking |
+| `src/ros2_unbag/` | https://github.com/ika-rwth-aachen/ros2_unbag |
+| `src/vicon_interfaces/` | https://github.com/einstein07/vicon_interfaces |
+| `src/ros2_fastDDS_vicon/` | https://github.com/einstein07/ros2_fastDDS_vicon |
+| `CollectiPy/` | https://github.com/einstein07/CollectiPy |
+| `crazyflie-firmware/` | https://github.com/bitcraze/crazyflie-firmware |
+
+Two of those sit at the top level rather than in `src/`, and neither is a ROS 2
+package:
+
+- **`CollectiPy/`** is a separate decision-making simulation framework, not
+  mine, checked out here for reference. It is **gitignored** — clone it
+  yourself from the link above.
+- **`crazyflie-firmware/`** is stock Bitcraze firmware, also not mine. It's
+  here **purely for debugging** — reading the estimator and commander source
+  when the drone does something inexplicable, and flashing a known version.
+  Nothing in the workspace builds against it. Also **gitignored**.
+
+Vendored code keeps its own license; see each package.
 
 ## Documentation
 
-The task-specific guides live in [`docs/`](docs/). If you're trying to actually
-do something with this workspace, start there rather than here:
+The task guides live in [`docs/`](docs/). If you're trying to actually do
+something with this workspace, start there rather than here — and start with
+the first row:
 
 | Guide | Use it when |
 |---|---|
+| [`docs/Full-Setup-and-Launch.md`](docs/Full-Setup-and-Launch.md) | **Start here.** Vicon calibration through to a flying drone, start to finish, plus what broke on the last two flight days |
+| [`docs/parameter-tuning.md`](docs/parameter-tuning.md) | Which number do I change, and how do I regenerate the kernel cache? |
 | [`docs/simulation.md`](docs/simulation.md) | Running in sim, no hardware |
 | [`docs/real-flight.md`](docs/real-flight.md) | Flying actual drones |
-| [`docs/hardware-drone.md`](docs/hardware-drone.md) | Radio config, firmware, batteries |
-| [`docs/vicon-setup.md`](docs/vicon-setup.md) | Mocap: subjects, markers, network |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Something is broken |
-| [`docs/analysis.md`](docs/analysis.md) | Bags, plots, post-flight data |
+| [`docs/hardware-drone-info.md`](docs/hardware-drone-info.md) | Radio config, firmware, batteries |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Symptom → cause → fix |
+| [`docs/analysis.md`](docs/analysis.md) | Bags, CSV export, plotting |
+
+[`docs/README.md`](docs/README.md) is the index, and also lists the writing
+conventions to follow when adding a guide.
 
 ## Build
 
@@ -45,18 +86,23 @@ source file does nothing at all until you rebuild.
 
 ```
 biodrone/
+├── RAN/                       # the model itself: notebooks, mean-field, papers, writeup
 ├── bags/                      # rosbag recordings (gitignored)
 ├── cache/                     # cflib TOC cache (gitignored)
+├── data/                      # CollectiPy config folders
 ├── docs/                      # task guides -- see above
+├── CollectiPy/                # (external, gitignored) decision-making sim framework
+├── crazyflie-firmware/        # (external, gitignored) stock Bitcraze firmware, debugging reference only
 └── src/
     ├── crazyflie_controller/       # per-drone flight controller
     │   └── controller_server.py    #   takeoff/land/goto + velocity control
     │
-    ├── spherical_ran/              # spherical RAN model
+    ├── spherical_ran/              # spherical RAN model -- the SAN server
     │   ├── spherical_RAN_server.py          # continuous attractor server
     │   └── generate_kernel_cache.py         # precomputes the RAN kernel
     │
     ├── crazyswarm_bringup/         # top-level orchestration
+    │   ├── config/                     # controller / ran / launch_args YAML
     │   └── launch/
     │       ├── real_drone.launch.py    # hardware bringup
     │       └── sim_drone.launch.py     # simulation bringup
@@ -67,17 +113,18 @@ biodrone/
     │
     ├── crazyswarm2/                # (vendored) Crazyflie driver + sim
     ├── ros2-vicon-receiver/        # (vendored) Vicon DataStream -> ROS 2
-    │   └── vicon_bridge.py         #   filtering + /poses + TF
+    │   └── vicon_bridge.py         #   MINE: filtering + /poses + TF
     ├── motion_capture_tracking/    # (vendored) mocap tracking libs
     ├── ros2_unbag/                 # (vendored) bag -> CSV export
-    └── vicon_interfaces/           # Vicon message definitions
+    ├── ros2_fastDDS_vicon/         # (vendored) FastDDS + Vicon setup guides
+    └── vicon_interfaces/           # (vendored) Vicon message definitions
 ```
 
-The packages written for this project are `crazyflie_controller`,
-`spherical_ran`, `crazyswarm_bringup`, `crazyflie_debug_gui`,
-`crazyflie_debug_interfaces`, `flight_analysis`, and `vicon_bridge.py`.
-Everything else is vendored, and most of it has been patched locally — so don't
-assume it matches upstream.
+**A note on naming.** The model is referred to as the **SAN** (spherical
+attractor network) in the newer docs and GUI, but the directories, packages, and
+parameters still say **RAN** (`spherical_ran`, `ran_params.yaml`,
+`ran_enabled`). They're the same thing. The rename hasn't been done yet, so go
+by `RAN` when you're grepping.
 
 ## Pipeline
 
@@ -124,7 +171,7 @@ A few other things run alongside that main path:
   purpose — that way a hung drone can't freeze the window, and in particular
   can't freeze the emergency stop.
 - **`ros2 bag record`** writes to `bags/flight_<timestamp>/` whenever
-  `record:=true`.
+  `record:=true`. `flight_analysis` reads those back afterwards.
 
 ### Command paths
 
@@ -172,5 +219,9 @@ Both launch files share these unless noted otherwise.
   the drone *drops*.
 - The GUI's ESTOP button is always live and never blocks on a service call.
 
-Please read [`docs/real-flight.md`](docs/real-flight.md) before flying real
-hardware.
+Please read
+[`docs/Full-Setup-and-Launch.md`](docs/Full-Setup-and-Launch.md) before flying
+real hardware — in particular the two **What Got Fixed** sections at the end,
+which cover the failures that actually bit us: dropped GoTos, stale headings,
+and the Vicon problems that make a drone drift or lurch with nothing logging an
+error anywhere.
