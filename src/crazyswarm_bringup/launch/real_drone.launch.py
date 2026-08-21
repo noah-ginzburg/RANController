@@ -215,14 +215,14 @@ def launch_controllers(context, *args, **kwargs):
                 output='screen',
                 parameters=ran_node_params,
             ))
-        # # One GUI per drone, outside the ran_drones check so it always runs.
-        # actions.append(Node(
-        #     package='crazyflie_debug_gui',
-        #     executable='crazyflie_debug_gui',
-        #     name=f'{name}_debug_gui',
-        #     output='screen',
-        #     parameters=[{'drone_name': name}],
-        # ))
+        # One GUI per drone, outside the ran_drones check so it always runs.
+        actions.append(Node(
+            package='crazyflie_debug_gui',
+            executable='crazyflie_debug_gui',
+            name=f'{name}_debug_gui',
+            output='screen',
+            parameters=[{'drone_name': name}],
+        ))
 
     return actions
 

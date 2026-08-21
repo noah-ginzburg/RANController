@@ -108,7 +108,7 @@ common:
   # command from the debug GUI. Genuinely independent of `teleop` now -- the
   # real launch file used to override this default to 'false' whenever teleop
   # was on, which made the comment true on paper and false in practice.
-  auto_launch: 'true'
+  auto_launch: 'false'
 
   # Whether the RAN server publishes <drone>/desired_heading, i.e. whether the
   # attractor model actually flies the drone.
@@ -134,7 +134,7 @@ common:
   # This is the STARTING state. The debug GUI has a "RAN Publisher" button that
   # toggles it live on <drone>/ran_enabled, so you don't have to relaunch to
   # take the model in or out of the loop mid-flight.
-  ran_enabled: 'true'
+  ran_enabled: 'false'
 
 #Real flight launch params
 real:
