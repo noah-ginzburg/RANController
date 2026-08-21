@@ -270,6 +270,90 @@ changed.
   normal hover height Ctrl+C is a coin flip between landing and ESTOP. Raise one
   or lower the other when you get a chance.
 
+## What Got Fixed (2026-08-21) — Flight Day
+
+Everything closed on the day hardware actually flew was on the **Vicon and
+airframe side**, not in the code. None of these throw an error anywhere in the
+stack: the launch comes up clean, the GUI looks fine, and the drone still
+misbehaves. Work through them in this order before blaming the controller.
+
+**Flickering pose — the drone twitches on the ground and jumps in the air.**
+- *Symptom*: position in the GUI jitters or drops out while the drone is sitting
+  still, markers blink in and out in Tracker, and `ros2 topic echo
+  /vicon/cfXX/cfXX` stutters. In the air this shows up as the drone shaking or
+  briefly losing altitude.
+- *Cause*: the Vicon is either uncalibrated (or calibrated from an old session,
+  since it does not persist reliably) or the strobe intensity is wrong, so
+  markers drop below the detection threshold on some cameras and the subject
+  fit flickers in and out.
+- *Fix*: **recalibrate before every session** — camera masks, wand wave, set
+  origin, the whole procedure in [Vicon setup](#vicon-setup). Then put the drone
+  in the arena and confirm all 5 markers stay lit with **zero** flicker before
+  arming. If any blink, raise or lower **Strobe Intensity** under **Vicon Camera
+  System** in the cameras tab until they're all solid. A pose that flickers on
+  the ground will flicker worse in the air, where the props add vibration and
+  the drone leaves the best-calibrated part of the volume.
+- Note that `vicon_bridge.py` filters the *worst* of this (repeated frames,
+  `(0,0,0)` dropouts — see the table above), but it can only drop bad frames, not
+  invent good ones. Filtering is not a substitute for a clean calibration.
+
+**Roll/pitch bias baked into the subject — the drone leans and drifts.**
+- *Symptom*: the drone hovers tilted, or slides steadily in one direction even
+  with no heading commanded. The attitude in the GUI reads non-zero roll or
+  pitch while the drone is sitting flat on the floor.
+- *Cause*: the subject was created while the drone was **not level** — on an
+  uneven patch of floor, on a battery/cable, or held by hand. Tracker bakes
+  whatever orientation it saw at creation time into the subject definition as
+  its zero, so the EKF is fed a constant attitude offset forever after. The
+  controller then dutifully corrects for a tilt that isn't there.
+- *Fix*: check for bias *before* takeoff: put the drone flat on the floor and
+  confirm roll and pitch read ~0. If they don't, **delete the subject and
+  recreate it** with the drone sitting genuinely level. There is no way to trim
+  this out downstream — the offset lives in the subject, so the subject is what
+  has to be fixed.
+
+**Drone not aligned to +X — pitch and roll are swapped or inverted.**
+- *Symptom*: the drone flies off at an angle to the commanded direction, or
+  corrects the wrong way and accelerates into a wall.
+- *Cause*: the drone's body X-axis was not aligned with the Vicon X-axis when
+  the subject was created. Commands are issued in the world frame, so any
+  mismatch between the two frames rotates every velocity command by that angle.
+- *Fix*: the drone must **face the positive X axis** at subject creation.
+  Push the drone's body parallel against the top bar of the wand with the front
+  marker pointing to the **left** of the (T) — that's +X. This is the same point
+  made in [Vicon setup](#vicon-setup); it is repeated here because it is the
+  single most common cause of a drone flying into a wall, and it is invisible
+  until it's airborne.
+
+**Steady drift in the air, everything in Vicon clean — replace motors and props.**
+- *Symptom*: pose is solid, no bias in the subject, axes aligned, and the drone
+  *still* creeps in one direction while hovering. The GUI motor readout shows a
+  large split (M1–M3 vs M2–M4, or one motor sitting well above the others).
+- *Cause*: mechanical. A bent prop, a bent motor shaft, or a motor that has lost
+  thrust makes the mixer hold a permanent correction to stay level, and that
+  correction is a lateral force.
+- *Fix*: **replace the props, and the motors if that doesn't do it.** Spin each
+  prop by hand first — a bent prop or shaft shows as two overlapping blurred
+  discs instead of one clean one — and feel for motors that vibrate or grind.
+  This is a consumable-parts problem, not a tuning problem; do not try to trim it
+  out in software.
+
+**Sudden violent movements are Vicon, not the controller.**
+- *Symptom*: the drone is hovering fine and then darts sideways, lurches, or
+  snaps to a new position for no reason.
+- *Cause*: a Vicon glitch, essentially always. Tracker briefly loses the subject
+  or mis-fits the markers, hands over a pose several centimetres (or more) from
+  the real one, and the onboard EKF believes it. The controller sees a huge
+  position error appear in one frame and commands a correspondingly huge
+  correction — so the drone lunges. The controller is behaving correctly on
+  bad input.
+- *Fix*: there is nothing to fix in the control loop. Go back to the top of this
+  section: recalibrate, cover the flight volume properly with the wand (Vicon
+  extrapolates where you didn't wave, and that's where the glitches live), fix
+  the strobe intensity, and confirm the 5 markers are **asymmetric** so Tracker
+  can't fit the subject in a wrong orientation. If a lurch happens mid-flight,
+  **ESTOP first, diagnose after** — the next glitch is usually worse.
+
 ## Gotchas
 
 - **`send_orientation` depends on the firmware.** `real_drone.launch.py:96`
