@@ -33,7 +33,14 @@
     # commanded velocity, in m/s (see des_heading_callback). It's the gain
     # between the attractor model and the drone, which makes it the most useful
     # knob in this file.
-    max_speed: 0.2
+    #
+    # Lowered from 0.2 on 2026-08-21. This is coupled to how fast the model can
+    # steer: the bearing to a target changes at roughly speed/distance, and the
+    # bump needs ~98 ticks to follow, so the faster the drone flies the further
+    # behind the published heading falls. Measured at 0.2 the heading sat
+    # 12-24 degrees off the true bearing and the drone overshot its target.
+    # Halving the speed halves the bearing rate the model has to track.
+    max_speed: 0.17
 
     # How long a single teleop /cmd_vel message stays authoritative, in
     # seconds. Until it expires the controller publishes the teleop velocity
@@ -41,11 +48,53 @@
     # commanded velocity takes back over.
     teleop_timeout: 0.5
 
+    # ---- Vertical authority ----------------------------------------------
+    #
+    # These exist because vertical has a deadband that horizontal does not.
+    #
+    # On the real drone the controller streams VelocityWorld, which puts the
+    # firmware in modeVelocity. position_controller_pid.c then skips its
+    # position PID entirely and closes the z loop on estimated VELOCITY -- so
+    # there is NO altitude feedback anywhere in the loop. Whatever the drone's
+    # natural z drift is, the RAN's vertical command has to beat it outright.
+    #
+    # And that command is small. Targets sit near flight altitude, so a real
+    # heading is mostly horizontal: 18 degrees below level is a z component of
+    # -0.31, which at max_speed 0.1 asks for 3 cm/s, while the horizontal part
+    # of the same unit vector is 0.95. That is why the drone tracks x and y
+    # fine and ignores "go down".
+    #
+    # Raising max_speed would also work, but it is a shared gain -- it raises
+    # horizontal speed too, and horizontal speed is what sets the bearing rate
+    # the attractor bump cannot keep up with. These two let vertical be tuned
+    # on its own.
+
+    # Floor on commanded vertical speed, in m/s, whenever the model actually
+    # asks to go up or down. The commanded z is raised to this magnitude (sign
+    # preserved) if it would otherwise be smaller.
+    #
+    # Start conservative and raise it until the drone visibly obeys "down".
+    # Note this makes the drone fly a STEEPER path than the heading asked for,
+    # since only z is boosted -- that is intentional. If you set this above
+    # max_speed the drone will move faster vertically than horizontally, which
+    # is legal but worth doing on purpose rather than by accident.
+    min_z_speed: 0.08
+
+    # How much vertical the heading has to be asking for, as a fraction of the
+    # unit heading vector, before the floor kicks in. 0.1 is about 6 degrees
+    # off level.
+    #
+    # This is what stops the drone bobbing: without it, sensor noise on a
+    # level heading would flip z between +/- the floor speed forever. Raise it
+    # if you see bobbing during level flight; lower it if shallow descents are
+    # still being ignored.
+    z_boost_deadzone: 0.1
+
     # ---- Takeoff ---------------------------------------------------------
 
     # How long the onboard high-level commander is given to reach the target
     # height, in seconds.
-    launch_duration: 5.0
+    launch_duration: 4.0
 
     # This is a safety limit. A takeoff is refused if the drone is already
     # above this altitude in metres, because at that point it's either already

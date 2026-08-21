@@ -79,7 +79,7 @@ robots:
     enabled: true
     uri: radio://0/100/2M/E7E7E7E7E8
     initial_position: [0.0, 0.0, 0.0]
-    delta_z: 0.8533
+    delta_z: 0.0
     # delta_z: 0.0
     type: cf21
 

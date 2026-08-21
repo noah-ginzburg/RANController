@@ -119,12 +119,27 @@
     # ---- Timing ----------------------------------------------------------
 
     # How often the model steps and publishes (IN ROS), in Hz.
-    update_rate: 50.0
+    #
+    # Raised from 50 to 100 on 2026-08-21, once the tick actually fit. This is
+    # the cleanest knob for responsiveness, because the model's trajectory is
+    # determined ENTIRELY by tick count -- wall-clock speed is just
+    # update_rate * dt. Doubling this replays the identical stochastic
+    # trajectory twice as fast in real time without touching u, sigma, kappa or
+    # the noise statistics. The bump needs ~98 ticks to follow a target that
+    # moves 90 degrees, which was ~2 s at 50 Hz and is ~1 s here.
+    #
+    # Do NOT raise this past what a tick actually costs. If the callback is
+    # slower than the period the timer just fires late, the model quietly runs
+    # slow, and update_rate also sets the dt cap in controller_server's GoTo
+    # ramp -- so an unachievable value makes the ramp under-integrate. Measured
+    # tick after vectorising is 1.65 ms (ceiling ~600 Hz), so 100 Hz has
+    # roughly 8 ms of headroom.
+    update_rate: 100.0
 
     # How long the node waits before it starts spinning, in seconds. This gives
     # TF and crazyflie_server time to come up first, so the first update() has
     # real transforms to look up rather than quietly failing every lookup.
-    startup_delay: 10.0
+    startup_delay: 7.0
 
     # The precomputed connectivity matrix, node positions and alphas.
     # generate_kernel_cache.py builds this, and it reads the path from right

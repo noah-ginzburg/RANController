@@ -161,7 +161,9 @@ class StaticTargetServer(Node):
             label.type = Marker.TEXT_VIEW_FACING
             label.pose.position.z = t.scale
             label.pose.orientation.w = 1.0
-            label.scale.z = 0.08
+            # Halved from 0.08 on 2026-08-21. TEXT_VIEW_FACING only reads
+            # scale.z -- it is the cap height in metres, not a multiplier.
+            label.scale.z = 0.04
             label.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=0.9)
             label.text = f'{t.name} (q={t.quality:g})'
 

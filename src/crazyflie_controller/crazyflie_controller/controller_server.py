@@ -1,3 +1,4 @@
+import math
 import sys
 import time
 from crazyflie_interfaces.srv import Takeoff, Land, GoTo, Arm, NotifySetpointsStop
@@ -243,6 +244,8 @@ class DroneController(Node):
             'goto_arrived_rad': 0.02,
             'goto_reached_m': 0.05,
             'goto_timeout_s': 20.0,
+            'min_z_speed': 0.08,
+            'z_boost_deadzone': 0.1,
             'group_mask': 0,
         }
         for name, default in defaults.items():
@@ -286,6 +289,9 @@ class DroneController(Node):
         self.GOTO_ARRIVED_RAD = float(p['goto_arrived_rad'])
         self.GOTO_REACHED_M = float(p['goto_reached_m'])
         self.GOTO_TIMEOUT_S = float(p['goto_timeout_s'])
+
+        self.MIN_Z_SPEED = float(p['min_z_speed'])
+        self.Z_BOOST_DEADZONE = float(p['z_boost_deadzone'])
 
     def send_arm_req(self, arm: bool):
         # Only the cflib/cpp (real) backends provide an arm service; the sim backend
@@ -882,6 +888,49 @@ class DroneController(Node):
         self.goto_hold = None
         self.should_hover = False
         self.vel_desired = self.max_speed * np.array([msg.x, msg.y, msg.z])
+        self._apply_z_boost(float(msg.z))
+
+    def _apply_z_boost(self, heading_z):
+        """Put a floor under the commanded vertical speed. RAN headings only.
+
+        Vertical has a deadband that horizontal does not, and it is entirely
+        one-sided in effect. On the real drone update() publishes
+        VelocityWorld, which puts the firmware in modeVelocity, so
+        position_controller_pid.c skips its position PID and closes the z loop
+        on the ESTIMATED VELOCITY alone -- there is no altitude feedback
+        anywhere in the loop. Any steady-state error in that velocity loop is
+        permanent altitude drift, and the RAN's vertical command has to beat it
+        outright rather than being corrected on top of a held altitude.
+
+        The command usually loses, because it is small. Targets sit near flight
+        altitude, so a realistic heading is mostly horizontal: at 18 degrees
+        below level the z component is -0.31, which at max_speed 0.1 asks for
+        3 cm/s. Meanwhile the horizontal component of that same unit vector is
+        0.95 -- thirty times larger -- which is why the drone tracks x and y
+        happily and ignores z.
+
+        Descending is the worse direction too. Cutting thrust drops the drone
+        into its own downwash, so the same RPM lifts more than it would in
+        still air and a gentle descent partly cancels itself. Climbing has no
+        equivalent.
+
+        Raising max_speed would fix the magnitude, but it is a shared gain: it
+        would raise horizontal speed as well, and horizontal speed sets the
+        bearing rate the bump cannot track. The floor is here so vertical
+        authority can be tuned WITHOUT paying for it in heading lag.
+
+        Note this deliberately breaks the commanded velocity away from the
+        model's heading: boosting z alone makes the drone fly a steeper path
+        than the RAN asked for. That is the point -- it buys vertical authority
+        the open-loop-in-altitude firmware would otherwise swallow.
+        """
+        if abs(heading_z) < self.Z_BOOST_DEADZONE:
+            # The model is not meaningfully asking for vertical motion. Leave
+            # it alone rather than have the drone bob at the floor speed every
+            # time noise nudges a level heading off zero.
+            return
+        if abs(self.vel_desired[Z_DIR]) < self.MIN_Z_SPEED:
+            self.vel_desired[Z_DIR] = math.copysign(self.MIN_Z_SPEED, heading_z)
 
     def update(self):
         now = self.get_clock().now()

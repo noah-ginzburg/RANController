@@ -136,6 +136,17 @@ def launch_controllers(context, *args, **kwargs):
                 package='spherical_ran',
                 executable='spherical_RAN_server',
                 name=f'spherical_RAN_server_{name}',
+            # numpy spawns one OpenBLAS worker per core (22 on this machine) and
+            # those workers SPIN-WAIT between operations instead of sleeping.
+            # The only BLAS call here is a 642x642 matrix-vector product that
+            # takes 0.08 ms single-threaded, so the threading buys nothing and
+            # costs everything: measured 794% CPU vs 97% for identical work,
+            # and in the live stack this node was burning ~18 cores doing
+            # nothing. That starved its own 50 Hz timer down to ~12-21 Hz and
+            # squeezed every other node on the machine with it.
+            additional_env={'OPENBLAS_NUM_THREADS': '1',
+                            'OMP_NUM_THREADS': '1',
+                            'MKL_NUM_THREADS': '1'},
                 output='screen',
                 parameters=[ran_params,
                             {'drone_name': name}, {'all_drones': ran_targets}, {'target_names': target_names}, {'target_qualities': target_qualities},

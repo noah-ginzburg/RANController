@@ -179,6 +179,8 @@ class SphericalRANServer(Node):
                              history=QoSHistoryPolicy.KEEP_LAST)
         self.vis_pub = self.create_publisher(MarkerArray, f'{self.drone_name}/ran_viz', vis_qos)
         self._vis_count = 0
+        # Built on first draw, then reused -- see _display_ran_rviz.
+        self._vis_points = None
 
         # Runtime toggle from the debug GUI. A plain topic rather than a
         # parameter service keeps the GUI's "never call a service, a blocked
@@ -370,10 +372,19 @@ class SphericalRANServer(Node):
 
         z_range = self.vis_z_max - self.vis_z_min
 
-        for i in range(len(cart_nodes)):
-            nodes_marker.points.append(Point(x=float(cart_nodes[i, X]), y=float(cart_nodes[i, Y]), z=float(cart_nodes[i, Z])))
-            t = (activations[i] - self.vis_z_min) / z_range
-            nodes_marker.colors.append(self._activation_to_color(t))
+        # The node POSITIONS never change -- self.nodes is frozen once the
+        # kernel cache loads -- so this list used to be rebuilt from scratch
+        # 642 Point objects at a time, every tick, to produce exactly the same
+        # thing. Build it once and hand the same list over each time.
+        if self._vis_points is None:
+            self._vis_points = [
+                Point(x=float(cart_nodes[i, X]),
+                      y=float(cart_nodes[i, Y]),
+                      z=float(cart_nodes[i, Z]))
+                for i in range(len(cart_nodes))]
+        nodes_marker.points = self._vis_points
+        nodes_marker.colors = self._activation_colors(
+            (np.asarray(activations) - self.vis_z_min) / z_range)
 
         heading_marker = Marker()
         heading_marker.header.stamp = stamp
@@ -399,6 +410,25 @@ class SphericalRANServer(Node):
 
         self.vis_pub.publish(MarkerArray(markers=[nodes_marker, heading_marker]))
 
+    def _activation_colors(self, t):
+        """Vectorised _activation_to_color over a whole activation array.
+
+        Identical arithmetic: the scalar version walks a uniform 4-stop ramp,
+        which is what the index/fraction split below reproduces for every node
+        at once. int() truncates toward zero and t is clamped non-negative, so
+        astype(int) is the same floor. _activation_to_color is kept as the
+        reference implementation and is what the equivalence test compares
+        against.
+        """
+        t = np.clip(np.asarray(t, dtype=float), 0.0, 1.0)
+        stops = np.asarray(RAN_VIS_COLORMAP, dtype=float)
+        seg = t * (len(stops) - 1)
+        i = np.minimum(seg.astype(int), len(stops) - 2)
+        f = (seg - i)[:, None]
+        rgb = stops[i] + f * (stops[i + 1] - stops[i])
+        return [ColorRGBA(r=float(c[0]), g=float(c[1]), b=float(c[2]), a=1.0)
+                for c in rgb]
+
     def _activation_to_color(self, t):
         t = float(np.clip(t, 0.0, 1.0))
         stops = RAN_VIS_COLORMAP
@@ -422,14 +452,40 @@ class SphericalRANServer(Node):
 
 
     def _generate_sensory_input(self, sphere_points, targets, kappa):
+        """Vectorised over nodes. Same arithmetic, one array op per target.
+
+        This used to be a nested Python loop, 642 nodes x every target, which
+        cost 11.7 ms of the 24.7 ms tick -- more than the model itself. Each
+        iteration paid numpy's per-call dispatch overhead (~1-5 us) to do a few
+        nanoseconds of actual work, and rebuilt the same `target_point` array
+        1926 times from values that never changed inside the loop.
+
+        The arccos/cos round trip below looks redundant, and mathematically it
+        is: _geodesic_distance returns arccos(X) and we immediately take
+        cos(alpha) to get X back. It is kept deliberately so this function is
+        BIT-IDENTICAL to the loop it replaces (dropping it shifts results by
+        ~2e-16 per element). Vectorised it costs about 10 us, against the
+        11.7 ms removed.
+        """
+        sphere_points = np.asarray(sphere_points)
         num_nodes = len(sphere_points)
         b = np.zeros(num_nodes)
 
-        for j in range(len(targets)):
-            for i in range(num_nodes):
-                target_point = np.array((targets[j][MAG], targets[j][PHI], targets[j][THETA]))
-                alpha = self._geodesic_distance(sphere_points[i], target_point)
-                b[i] += np.exp(kappa * (np.cos(alpha) - 1.0)) * targets[j][QUALITY]
+        # Depend only on the node mesh, which is frozen once the kernel cache
+        # loads -- but cheap enough vectorised that caching them on self would
+        # buy noise.
+        node_phi = sphere_points[:, PHI]
+        cos_node_theta = np.cos(sphere_points[:, THETA])
+        sin_node_theta = np.sin(sphere_points[:, THETA])
+
+        for target in targets:
+            cos_alpha = np.clip(
+                cos_node_theta * np.cos(target[THETA])
+                + sin_node_theta * np.sin(target[THETA])
+                * np.cos(node_phi - target[PHI]),
+                -1, 1)
+            alpha = np.arccos(cos_alpha)
+            b += np.exp(kappa * (np.cos(alpha) - 1.0)) * target[QUALITY]
 
         b *= (1/np.sqrt(num_nodes))
         return b
@@ -439,10 +495,14 @@ class SphericalRANServer(Node):
         return alpha
 
     def _rand_link_func(self, y, sigma, inv_sqrt_n):
-        out = np.empty_like(y)
-        for i in range(y.size):
-            out[i] = np.random.normal(0.0, sigma) * inv_sqrt_n
-        return out
+        """Vectorised. Draws the SAME numbers, in the same order.
+
+        numpy's legacy generator fills a size=N request from one stream in
+        exactly the order N scalar calls would consume it, so this is
+        bit-identical to the loop it replaces -- verified, not assumed. A given
+        seed still reproduces a previous run.
+        """
+        return np.random.normal(0.0, sigma, size=y.size) * inv_sqrt_n
 
     def _find_vel_avg_3D(self, points, activations):
         points = np.array(self._polar_to_cartesian_3D(points))
@@ -468,14 +528,24 @@ class SphericalRANServer(Node):
         return cpy
 
     def _polar_to_cartesian_3D(self, points):
-        cpy = points.copy()
-        for i in range(len(cpy)):
-            r, theta, phi = cpy[i]
-            x = r * np.sin(phi) * np.cos(theta)
-            y = r * np.sin(phi) * np.sin(theta)
-            z = r * np.cos(phi)
-            cpy[i] = x, y, z
-        return cpy
+        """Vectorised. Column order is [r, theta, phi] = [MAG, PHI, THETA].
+
+        Yes, the local names and the index constants disagree: the loop this
+        replaces unpacked `r, theta, phi = cpy[i]`, so its `theta` is column
+        PHI and its `phi` is column THETA. Indices are used directly here
+        rather than the constants, to keep that mapping exactly as it was.
+        """
+        cpy = np.asarray(points)
+        r = cpy[:, 0]
+        theta = cpy[:, 1]
+        phi = cpy[:, 2]
+        sin_phi = np.sin(phi)
+
+        out = np.empty_like(cpy)
+        out[:, 0] = r * sin_phi * np.cos(theta)
+        out[:, 1] = r * sin_phi * np.sin(theta)
+        out[:, 2] = r * np.cos(phi)
+        return out
 
 
 

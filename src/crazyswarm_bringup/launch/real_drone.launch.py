@@ -201,17 +201,28 @@ def launch_controllers(context, *args, **kwargs):
                 package='spherical_ran',
                 executable='spherical_RAN_server',
                 name=f'spherical_RAN_server_{name}',
+            # numpy spawns one OpenBLAS worker per core (22 on this machine) and
+            # those workers SPIN-WAIT between operations instead of sleeping.
+            # The only BLAS call here is a 642x642 matrix-vector product that
+            # takes 0.08 ms single-threaded, so the threading buys nothing and
+            # costs everything: measured 794% CPU vs 97% for identical work,
+            # and in the live stack this node was burning ~18 cores doing
+            # nothing. That starved its own 50 Hz timer down to ~12-21 Hz and
+            # squeezed every other node on the machine with it.
+            additional_env={'OPENBLAS_NUM_THREADS': '1',
+                            'OMP_NUM_THREADS': '1',
+                            'MKL_NUM_THREADS': '1'},
                 output='screen',
                 parameters=ran_node_params,
             ))
-        # One GUI per drone, outside the ran_drones check so it always runs.
-        actions.append(Node(
-            package='crazyflie_debug_gui',
-            executable='crazyflie_debug_gui',
-            name=f'{name}_debug_gui',
-            output='screen',
-            parameters=[{'drone_name': name}],
-        ))
+        # # One GUI per drone, outside the ran_drones check so it always runs.
+        # actions.append(Node(
+        #     package='crazyflie_debug_gui',
+        #     executable='crazyflie_debug_gui',
+        #     name=f'{name}_debug_gui',
+        #     output='screen',
+        #     parameters=[{'drone_name': name}],
+        # ))
 
     return actions
 
@@ -315,9 +326,9 @@ def generate_launch_description():
     rviz_config_arg = DeclareLaunchArgument(
         'rviz_config_file',
         default_value=PythonExpression([
-            "'", os.path.join(pkg_bringup, 'rviz', 'static_targets.rviz'),
+            "'", os.path.join(pkg_bringup, 'rviz', 'real.rviz'),
             "' if '", LaunchConfiguration('use_static_targets'), "' == 'true' else '",
-            os.path.join(pkg_bringup, 'rviz', '3_targets.rviz'), "'"]))
+            os.path.join(pkg_bringup, 'rviz', 'real.rviz'), "'"]))
 
     pkg_crazyswarm2 = get_package_share_directory('crazyflie')
 
